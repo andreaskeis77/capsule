@@ -26,3 +26,14 @@ Thumbs.db
 # ngrok
 *.yml
 ngrok.exe
+
+# Virtual environments
+.venv/
+.venv_*/
+.venv_broken_*/
+
+# Runtime artifacts
+logs/
+docs/_snapshot/
+__pycache__/
+*.pyc

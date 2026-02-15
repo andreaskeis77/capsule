@@ -36,3 +36,25 @@ Priorität: Stabilität, Reproduzierbarkeit, saubere Versionskontrolle, nachvoll
 - Logs sauber (keine Exceptions beim Start)
 - Commit vorhanden
 - (Optional) Snapshot aktualisiert
+
+## AI Collaboration & Engineering Rules
+
+### Determinism First
+- No inline hotfixing without understanding root cause.
+- Always parse before guessing.
+- When PowerShell behaves oddly → inspect tokens, encoding, AST.
+
+### Encoding Discipline
+- UTF8 only
+- No smart quotes
+- No inline multiline replacements without verification
+
+### Incremental Validation
+- Change → Run → Inspect → Commit
+- Never change multiple logical concerns in one step.
+
+### Transparency Rule
+If root cause unclear:
+- say so
+- request exact file segment
+- inspect, not speculate
