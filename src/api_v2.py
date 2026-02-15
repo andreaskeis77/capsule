@@ -73,6 +73,7 @@ def init_ontology() -> None:
             exc_info=True,
         )
 
+
 def _request_id(request: Request) -> str:
     return request.state.request_id if hasattr(request.state, "request_id") else "-"
 
@@ -98,7 +99,7 @@ def db_conn() -> sqlite3.Connection:
 
 def _slugify(name: str) -> str:
     s = name.strip().lower()
-    s = s.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    s = s.replace("Ã¤", "ae").replace("Ã¶", "oe").replace("Ã¼", "ue").replace("ÃŸ", "ss")
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     return s or "item"
 
@@ -133,12 +134,16 @@ def _normalize_image_to_jpg(raw: bytes) -> bytes:
         return out.getvalue()
 
 
-def _rmtree_robust(path: Path | str) -> None:
+def _rmtree_robust(path: Path | str, ignore_errors: bool = False) -> None:
     """
     Robust directory delete for Windows.
 
     On Windows it's common that a file handle is briefly held (virus scanner, preview, etc.).
     We try a few times and, if needed, flip the readonly bit.
+
+    ignore_errors:
+      - False (default): raise after final attempt
+      - True: swallow errors (best-effort cleanup)
     """
     path = Path(path)
     import stat
@@ -158,10 +163,13 @@ def _rmtree_robust(path: Path | str) -> None:
         try:
             if not path.exists():
                 return
+            # We handle ignore_errors ourselves so we can keep the onerror behavior.
             shutil.rmtree(path, onerror=_onerror)
             return
         except Exception:
             if attempt == 2:
+                if ignore_errors:
+                    return
                 raise
             time.sleep(0.2 * (attempt + 1))
 
@@ -172,7 +180,15 @@ def _ontology_apply(
     request_id: str,
 ) -> Tuple[Optional[str], NormalizationResult]:
     if ONTOLOGY is None:
-        nr = NormalizationResult(field=field, original=value or "", canonical=value, matched_by="none", confidence=0.0, suggestions=[], meta=None)
+        nr = NormalizationResult(
+            field=field,
+            original=value or "",
+            canonical=value,
+            matched_by="none",
+            confidence=0.0,
+            suggestions=[],
+            meta=None,
+        )
         return value, nr
 
     canonical, nr = ONTOLOGY.validate_or_normalize(field, value)
@@ -191,7 +207,9 @@ def _ontology_apply(
             "error": "OntologyValidationError",
             "field": field,
             "value": value,
-            "suggestions": [{"canonical": s.canonical, "score": s.score, "label": s.label} for s in (nr.suggestions or [])],
+            "suggestions": [
+                {"canonical": s.canonical, "score": s.score, "label": s.label} for s in (nr.suggestions or [])
+            ],
             "request_id": request_id,
         }
         raise HTTPException(status_code=400, detail=detail)
@@ -229,7 +247,7 @@ def _heuristic_color_family_suggestions(text: str) -> List[str]:
         return []
     if "teal" in t:
         return ["blue", "green"]
-    if "turquoise" in t or "tuerkis" in t or "türkis" in t:
+    if "turquoise" in t or "tuerkis" in t or "tÃ¼rkis" in t:
         return ["blue", "green"]
     if "offwhite" in t or "off-white" in t:
         return ["white", "beige"]
