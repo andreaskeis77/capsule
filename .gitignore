@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Database
+03_database/*.db
+03_database/*.sqlite
+
+# Images
+02_wardrobe_images/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# ngrok
+*.yml
+ngrok.exe

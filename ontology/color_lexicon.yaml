@@ -1,0 +1,96 @@
+version: 1
+
+# Map: input term -> canonical family (vs_color_family)
+# Families: black, white, grey, blue, red, green, brown, beige, yellow_orange, purple_pink, metallic, multicolor
+
+dunkelblau: { family: blue }
+hellblau:   { family: blue }
+marine:     { family: blue }
+navy:       { family: blue }
+kobaltblau: { family: blue }
+koenigsblau:{ family: blue }
+königsblau: { family: blue }
+jeansblau:  { family: blue }
+tuerkis:    { family: blue }
+türkis:     { family: blue }
+petrol:     { family: blue }     # je nach Geschmack: blue oder green – hier blue als default
+aqua:       { family: blue }
+
+mint:       { family: green }
+salbei:     { family: green }
+oliv:       { family: green }
+olive:      { family: green }
+khaki:      { family: green }
+tannengruen:{ family: green }
+tannengrün: { family: green }
+smaragd:    { family: green }
+limette:    { family: green }
+neongruen:  { family: green }
+neongrün:   { family: green }
+
+rot:        { family: red }
+weinrot:    { family: red }
+bordeaux:   { family: red }
+burgund:    { family: red }
+kirschrot:  { family: red }
+ziegelrot:  { family: red }
+rostrot:    { family: red }
+koralle:    { family: red }
+lachs:      { family: red }
+
+pink:       { family: purple_pink }
+fuchsia:    { family: purple_pink }
+fuchsie:    { family: purple_pink }
+magenta:    { family: purple_pink }
+altrosa:    { family: purple_pink }
+rosé:       { family: purple_pink }
+rose:       { family: purple_pink }
+
+lila:       { family: purple_pink }
+flieder:    { family: purple_pink }
+lavendel:   { family: purple_pink }
+aubergine:  { family: purple_pink }
+pflaume:    { family: purple_pink }
+
+gelb:       { family: yellow_orange }
+senf:       { family: yellow_orange }
+orange:     { family: yellow_orange }
+apricot:    { family: yellow_orange }
+mandarine:  { family: yellow_orange }
+
+beige:      { family: beige }
+sand:       { family: beige }
+camel:      { family: beige }
+ecru:       { family: beige }
+écru:       { family: beige }
+creme:      { family: beige }
+cremeweiss: { family: beige }
+cremeweiß:  { family: beige }
+offwhite:   { family: beige }
+ivory:      { family: beige }
+greige:     { family: beige }
+taupe:      { family: beige }
+
+braun:      { family: brown }
+cognac:     { family: brown }
+schoko:     { family: brown }
+schokolade: { family: brown }
+espresso:   { family: brown }
+kastanie:   { family: brown }
+nuss:       { family: brown }
+terra:      { family: brown }
+terrakotta: { family: brown }
+rost:       { family: brown }
+
+schwarz:    { family: black }
+anthrazit:  { family: grey }
+silber:     { family: metallic }
+gold:       { family: metallic }
+metallic:   { family: metallic }
+
+weiss:      { family: white }
+weiß:       { family: white }
+elfenbein:  { family: beige }    # meistens warm -> beige/offwhite
+grau:       { family: grey }
+graumeliert:{ family: grey }
+grau-meliert:{ family: grey }

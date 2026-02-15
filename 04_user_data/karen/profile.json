@@ -1,0 +1,23 @@
+{
+    "user_id": "karen_01",
+    "name": "Karen",
+    "physical": {
+        "height_cm": null,
+        "color_type": "Noch analysieren",
+        "body_shape": null
+    },
+    "goals": {
+        "strategy": "Minimalist Capsule",
+        "max_items_total": 40,
+        "min_outfit_days": 14,
+        "review_period_months": 12,
+        "sustainability_weight": 0.8,
+        "preferred_materials": [
+            "Bio-Baumwolle",
+            "Leinen",
+            "Wolle"
+        ]
+    },
+    "preferences": [],
+    "discard_history": []
+}

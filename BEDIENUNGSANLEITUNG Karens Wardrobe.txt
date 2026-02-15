@@ -1,0 +1,34 @@
+BEDIENUNGSANLEITUNG: Karens Wardrobe Studio
+
+1. STARTEN (Jeden Morgen oder vor der Planung)
+
+Mache einen Doppelklick auf das Icon "Wardrobe Studio" (das mit dem Kleiderbügel) auf deinem Desktop.
+Was passiert dann?
+Zwei schwarze Fenster öffnen sich kurz und minimieren sich dann von selbst.
+Google Chrome öffnet sich automatisch mit deiner Kleiderschrank-Übersicht.
+Ein kleines Hinweisfenster erscheint: "Dein Wardrobe Studio ist bereit!" Bestätige dies einfach mit OK.
+
+
+2. NUTZUNG IN CHATGPT
+
+Öffne dein ChatGPT und wähle den "Capsule Wardrobe Architect" aus.
+Nutze am besten die fertigen Knöpfe über dem Schreibfeld (z.B. "Ich bin Karen und brauche eine Beratung...").
+Das GPT wird dich nun Schritt für Schritt nach dem Anlass und der Dauer fragen.
+
+
+3. WAS TUN, WENN ES NICHT GEHT? (Troubleshooting)
+
+Problem: ChatGPT sagt "Fehler bei der Aktion" oder "Kann Server nicht erreichen"
+Lösung: Prüfe, ob unten in deiner Taskleiste noch das schwarze Fenster (die Konsole) offen ist. Wenn nicht: Schließe Chrome und starte die Datei auf dem Desktop einfach noch einmal neu.
+
+Problem: Die Bilder im Dashboard (Chrome) werden nicht geladen
+Lösung: Das System braucht beim Starten ca. 4-5 Sekunden Zeit, um alle Daten zu laden. Warte einen Moment und drücke in Chrome die Taste F5, um die Seite neu zu laden.
+
+Problem: ChatGPT findet keine Kleidung für mich
+Lösung: Achte darauf, dass du dem GPT sagst: "Ich bin Karen". Er braucht diesen Namen, um in der richtigen Datenbank zu suchen.
+
+
+Wenn gar nichts mehr hilft:
+
+Schließe alle Fenster, starte den Laptop einmal neu und klicke wieder auf das Wardrobe-Icon. 
+Wenn es dann immer noch hakt: Ruf Andreas!

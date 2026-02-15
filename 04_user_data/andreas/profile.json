@@ -1,0 +1,19 @@
+{
+    "user_id": "andreas_01",
+    "name": "Andreas",
+    "physical": {
+        "height_cm": 193,
+        "color_type": null,
+        "body_shape": null
+    },
+    "goals": {
+        "strategy": "Minimalist Capsule",
+        "max_items_total": 60,
+        "min_outfit_days": 7,
+        "review_period_months": 12,
+        "sustainability_weight": 0.8,
+        "preferred_materials": []
+    },
+    "preferences": [],
+    "discard_history": []
+}

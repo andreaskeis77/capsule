@@ -1,0 +1,11 @@
+version: 1
+
+# Overrides werden vor Legacy und vor Fuzzy angewendet.
+# Keys sind Nutzereingaben (Deutsch/Alltag), Values sind Ontologie-Kanonwerte.
+
+color_primary:
+  dunkelblau: blue
+  hellblau: blue
+  marineblau: blue
+  koenigsblau: blue
+  königsblau: blue
