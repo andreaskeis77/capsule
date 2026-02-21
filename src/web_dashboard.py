@@ -7,12 +7,14 @@ from typing import Dict, List, Tuple, Optional
 
 from flask import Flask, render_template, request, send_from_directory, jsonify, abort, redirect, url_for
 
+from src import settings
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("WardrobeAPI")
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DB_PATH = os.path.join(BASE_DIR, "03_database", "wardrobe.db")
-IMG_DIR = os.path.join(BASE_DIR, "02_wardrobe_images")
+DB_PATH = str(settings.DB_PATH)
+IMG_DIR = str(settings.IMG_DIR)
 
 app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"))
 flask_app = app
@@ -78,21 +80,21 @@ def _infer_top_category(category_value: Optional[str], name_value: Optional[str]
     blob = f"{c} {n}".strip()
 
     # Reihenfolge ist wichtig (spezifisch -> unspezifisch)
-    if any(k in blob for k in ["shoe", "footwear", "sneaker", "boot", "pump", "loafer", "sandal", "stief", "schuh"]):
+    if any(k in blob for k in ["shoe", "footwear", "schuh", "sneaker", "boot", "stiefel", "loafer", "pumps", "sandale"]):
         return "Schuhe"
-    if any(k in blob for k in ["bag", "handbag", "purse", "tote", "clutch", "beltbag", "crossbody", "tasche", "handtasche"]):
+    if any(k in blob for k in ["bag", "handtasche", "clutch", "tote", "purse", "rucksack", "backpack"]):
         return "Handtaschen"
-    if any(k in blob for k in ["dress", "kleid", "hemdkleid", "shirtkleid"]):
+    if any(k in blob for k in ["dress", "kleid"]):
         return "Kleider"
-    if any(k in blob for k in ["skirt", "rock", "roeck", "röck", "rock "]):
-        return "Röcke"
-    if any(k in blob for k in ["trouser", "pants", "jeans", "hose", "culotte", "leggings"]):
-        return "Hosen"
-    if any(k in blob for k in ["blouse", "shirt", "top", "hemd", "bluse", "tunic", "tunika"]):
+    if any(k in blob for k in ["bluse", "shirt", "top", "pullover", "sweater", "hemd", "blazer"]):
         return "Blusen & Oberteile"
-    if any(k in blob for k in ["jacket", "coat", "blazer", "mantel", "jacke", "cardigan", "poncho", "cape"]):
+    if any(k in blob for k in ["hose", "pants", "jeans", "trouser"]):
+        return "Hosen"
+    if any(k in blob for k in ["rock", "skirt"]):
+        return "Röcke"
+    if any(k in blob for k in ["mantel", "coat", "jacke", "jacket", "parka", "trench"]):
         return "Jacken & Mäntel"
-    if any(k in blob for k in ["scarf", "belt", "hat", "glove", "accessor", "schmuck", "kette", "ohrr", "brosche", "gurt"]):
+    if any(k in blob for k in ["ohrring", "kette", "armband", "ring", "brosche", "schmuck", "accessoire", "accessory"]):
         return "Accessoires"
 
     return "Sonstiges"
@@ -100,38 +102,27 @@ def _infer_top_category(category_value: Optional[str], name_value: Optional[str]
 
 def _load_images_for_item(image_path: Optional[str]) -> List[str]:
     """
-    Returns URL-encoded relative file list "image_path/filename.ext" (posix) for template usage.
+    Returns list of image URLs (relative to /images/...).
     """
-    if not image_path:
-        return []
-    folder = os.path.join(IMG_DIR, image_path)
-    if not os.path.exists(folder):
+    rel = _safe_str(image_path)
+    if not rel:
         return []
 
-    imgs = [
-        f for f in os.listdir(folder)
-        if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
-    ]
-    # main.jpg first if present, then alphabetic
-    imgs.sort(key=lambda x: (x.lower() != "main.jpg", x.lower()))
-    return [urllib.parse.quote(f"{image_path}/{f}".replace("\\", "/")) for f in imgs]
-
-
-def _fetch_items_for_user(conn: sqlite3.Connection, user: str) -> List[sqlite3.Row]:
-    return conn.execute("SELECT * FROM items WHERE user_id = ? ORDER BY id DESC", (user,)).fetchall()
-
-
-def _fetch_items_by_ids_for_user(conn: sqlite3.Connection, user: str, ids: List[int]) -> List[sqlite3.Row]:
-    """
-    Fetch selected items for user by ids.
-    NOTE: DB returns arbitrary order, we reorder later to match ids list.
-    """
-    if not ids:
+    abs_dir = os.path.join(IMG_DIR, rel)
+    if not os.path.isdir(abs_dir):
         return []
-    placeholders = ",".join(["?"] * len(ids))
-    sql = f"SELECT * FROM items WHERE user_id = ? AND id IN ({placeholders})"
-    params = [user] + ids
-    return conn.execute(sql, params).fetchall()
+
+    files = []
+    try:
+        for fn in os.listdir(abs_dir):
+            if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                files.append(fn)
+    except Exception:
+        return []
+
+    # stable order: main first, then others
+    files.sort(key=lambda x: (0 if x.lower().startswith("main") else 1, x.lower()))
+    return [f"/images/{urllib.parse.quote(rel)}/{urllib.parse.quote(fn)}" for fn in files]
 
 
 def _is_local_request() -> bool:
@@ -161,65 +152,69 @@ def _api_headers() -> Dict[str, str]:
     return {"X-API-Key": _api_key()}
 
 
+def _allow_local_noauth() -> bool:
+    return os.getenv("WARDROBE_ALLOW_LOCAL_NOAUTH", "0").strip() in {"1", "true", "True", "yes", "YES"}
+
+
+def _require_api_key() -> None:
+    """Require X-API-Key for remote calls (legacy /api/v1 endpoints)."""
+    if _allow_local_noauth() and _is_local_request():
+        return
+    provided = (request.headers.get("X-API-Key") or "").strip()
+    if not provided or provided != _api_key():
+        abort(401, description="Unauthorized: missing/invalid X-API-Key")
+
+
 def _http_request(method: str, url: str, json_body: Optional[Dict] = None) -> Tuple[int, str]:
     """
-    Minimal HTTP client without extra deps.
-    Returns (status_code, response_text).
+    Minimal HTTP client (stdlib) for calling our own API v2 from admin routes.
+    Avoids adding requests dependency.
     """
-    import json as _json
-    import urllib.request as _ur
-    import urllib.error as _ue
+    import json
+    import urllib.request
 
     data = None
-    headers = {"Content-Type": "application/json", **_api_headers()}
+    headers = _api_headers().copy()
     if json_body is not None:
-        data = _json.dumps(json_body).encode("utf-8")
+        data = json.dumps(json_body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
 
-    req = _ur.Request(url=url, data=data, method=method.upper(), headers=headers)
+    req = urllib.request.Request(url=url, data=data, method=method, headers=headers)
     try:
-        with _ur.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            return resp.status, body
-    except _ue.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
-        return int(e.code), body
+            return resp.getcode(), body
     except Exception as e:
         return 0, str(e)
 
 
 @app.route("/")
 def index():
+    """
+    Dashboard:
+    - default user is karen (query param)
+    - optional top-category filters
+    - optional selection mode (?mode=select&ids=1,2,3)
+    - admin mode (?mode=admin) is local-only
+    """
     user = request.args.get("user", "karen").strip().lower()
+    mode = request.args.get("mode", "").strip().lower()
     top = request.args.get("top", "").strip()
     ids_raw = request.args.get("ids", "")
-    selected_ids = _parse_ids_param(ids_raw)
-    selection_mode = len(selected_ids) > 0
 
-    mode = request.args.get("mode", "").strip().lower()
+    selection_mode = mode == "select"
     admin_mode = mode == "admin"
+
     if admin_mode:
         _require_admin_local()
 
+    selected_ids = _parse_ids_param(ids_raw) if selection_mode else []
+
     conn = get_db_connection()
-
-    if selection_mode:
-        rows = _fetch_items_by_ids_for_user(conn, user, selected_ids)
-
-        row_map: Dict[int, sqlite3.Row] = {}
-        for r in rows:
-            try:
-                _id = int(r["id"])
-            except Exception:
-                continue
-            row_map[_id] = r
-
-        rows_base: List[sqlite3.Row] = []
-        for _id in selected_ids:
-            rr = row_map.get(_id)
-            if rr is not None:
-                rows_base.append(rr)
-    else:
-        rows_base = _fetch_items_for_user(conn, user)
+    rows_base = conn.execute(
+        "SELECT id, user_id, name, category, color_primary, color_variant, needs_review, image_path FROM items WHERE user_id = ? ORDER BY id DESC",
+        (user,),
+    ).fetchall()
 
     # Build enriched items list
     items_all: List[Dict] = []
@@ -240,6 +235,7 @@ def index():
     else:
         items = items_all
 
+    # Stable order of filter buttons
     top_order = [
         "Kleider",
         "Blusen & Oberteile",
@@ -274,6 +270,10 @@ def index():
 
 @app.route("/item/<int:item_id>")
 def item_detail(item_id: int):
+    """
+    Detailseite für 1 Item.
+    Optional ?user=karen wird nur für UI-Navigation verwendet.
+    """
     user = request.args.get("user", "karen").strip().lower()
 
     conn = get_db_connection()
@@ -373,9 +373,10 @@ def admin_delete_item(item_id: int):
     return redirect(f"/?user={urllib.parse.quote(user)}&mode=admin")
 
 
-# --- GPT API ENDPOINTS (Legacy, keep for compatibility) ---
+# --- GPT API ENDPOINTS (Legacy, keep for compatibility; now protected via X-API-Key) ---
 @app.route("/api/v1/inventory", methods=["GET"])
 def api_get_inventory():
+    _require_api_key()
     user = request.args.get("user", "karen")
     conn = get_db_connection()
     items = [
@@ -391,6 +392,7 @@ def api_get_inventory():
 
 @app.route("/api/v1/item/<int:item_id>", methods=["GET"])
 def api_get_item_detail(item_id):
+    _require_api_key()
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
     conn.close()
