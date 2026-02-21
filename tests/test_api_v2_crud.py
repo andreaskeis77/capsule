@@ -5,7 +5,6 @@ import base64
 import io
 import os
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -49,72 +48,47 @@ def make_test_jpeg_b64(size: tuple[int, int] = (50, 50)) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-@pytest.fixture(scope="module")
-def client(tmp_path_factory):
-    """
-    IMPORTANT:
-    src.settings reads env vars at import time and stores DB_PATH/IMG_DIR as module globals.
-    Therefore this fixture is module-scoped and sets env once for the whole module.
-    """
-    root = tmp_path_factory.mktemp("wardrobe_test")
-    db_path = root / "wardrobe_test.db"
-    img_dir = root / "images"
-    trash_dir = root / "trash_images"
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    db_path = tmp_path / "wardrobe_test.db"
+    img_dir = tmp_path / "images"
+    trash_dir = tmp_path / "trash_images"
 
     init_test_db(db_path)
     img_dir.mkdir(parents=True, exist_ok=True)
     trash_dir.mkdir(parents=True, exist_ok=True)
 
-    keys = [
-        "WARDROBE_DB_PATH",
-        "WARDROBE_IMG_DIR",
-        "WARDROBE_TRASH_DIR",
-        "WARDROBE_API_KEY",
-        "WARDROBE_ENV",
-        "WARDROBE_DEBUG",
-        "WARDROBE_ALLOW_LOCAL_NOAUTH",
-        "WARDROBE_MOUNT_FLASK",
-        "WARDROBE_MAX_IMAGE_MB",
-        "WARDROBE_IMAGE_MAX_DIM",
-        "WARDROBE_IMAGE_JPEG_QUALITY",
-        "WARDROBE_STORE_ORIGINAL",
-        "WARDROBE_ONTOLOGY_MODE",
-    ]
-    old = {k: os.environ.get(k) for k in keys}
+    monkeypatch.setenv("WARDROBE_DB_PATH", str(db_path))
+    monkeypatch.setenv("WARDROBE_IMG_DIR", str(img_dir))
+    monkeypatch.setenv("WARDROBE_TRASH_DIR", str(trash_dir))
 
-    os.environ["WARDROBE_DB_PATH"] = str(db_path)
-    os.environ["WARDROBE_IMG_DIR"] = str(img_dir)
-    os.environ["WARDROBE_TRASH_DIR"] = str(trash_dir)
-
-    os.environ["WARDROBE_API_KEY"] = "testkey"
-    os.environ["WARDROBE_ENV"] = "test"
-    os.environ["WARDROBE_DEBUG"] = "1"
-    os.environ["WARDROBE_ALLOW_LOCAL_NOAUTH"] = "0"
-    os.environ["WARDROBE_MOUNT_FLASK"] = "0"
-    os.environ["WARDROBE_MAX_IMAGE_MB"] = "8"
-    os.environ["WARDROBE_IMAGE_MAX_DIM"] = "1600"
-    os.environ["WARDROBE_IMAGE_JPEG_QUALITY"] = "85"
-    os.environ["WARDROBE_STORE_ORIGINAL"] = "0"
+    monkeypatch.setenv("WARDROBE_API_KEY", "testkey")
+    monkeypatch.setenv("WARDROBE_ENV", "test")
+    monkeypatch.setenv("WARDROBE_DEBUG", "1")
+    monkeypatch.setenv("WARDROBE_ALLOW_LOCAL_NOAUTH", "0")
+    monkeypatch.setenv("WARDROBE_MOUNT_FLASK", "0")
+    monkeypatch.setenv("WARDROBE_MAX_IMAGE_MB", "8")
+    monkeypatch.setenv("WARDROBE_IMAGE_MAX_DIM", "1600")
+    monkeypatch.setenv("WARDROBE_IMAGE_JPEG_QUALITY", "85")
+    monkeypatch.setenv("WARDROBE_STORE_ORIGINAL", "0")
 
     # IMPORTANT: keep ontology off in CRUD tests
-    os.environ["WARDROBE_ONTOLOGY_MODE"] = "off"
+    monkeypatch.setenv("WARDROBE_ONTOLOGY_MODE", "off")
 
-    # Force fresh import so settings picks up env reliably
-    for mod in ("src.settings", "src.api_v2", "src.api_main"):
-        if mod in sys.modules:
-            del sys.modules[mod]
+    # Recompute settings module globals for this test env
+    from src import settings as settings_module
+
+    settings_module.reload_settings()
+
+    # Ensure ontology global reflects current settings
+    from src import api_v2
+
+    api_v2.init_ontology()
 
     from src.api_main import app
 
     with TestClient(app) as c:
         yield c
-
-    # restore env
-    for k, v in old.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
 
 
 def test_health(client):

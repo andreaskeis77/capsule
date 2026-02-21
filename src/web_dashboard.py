@@ -1,34 +1,37 @@
 ﻿# FILE: src/web_dashboard.py
+from __future__ import annotations
+
+import logging
 import os
 import sqlite3
-import logging
 import urllib.parse
-from typing import Dict, List, Tuple, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-from flask import Flask, render_template, request, send_from_directory, jsonify, abort, redirect, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory
 
 from src import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("WardrobeAPI")
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DB_PATH = str(settings.DB_PATH)
-IMG_DIR = str(settings.IMG_DIR)
+BASE_DIR = settings.BASE_DIR  # repo root as Path
 
-app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"))
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 flask_app = app
 
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    # Read from settings dynamically (supports settings.reload_settings())
+    conn = sqlite3.connect(str(settings.DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 
 
 @app.route("/images/<path:filename>")
 def serve_images(filename):
-    return send_from_directory(IMG_DIR, urllib.parse.unquote(filename))
+    # Read from settings dynamically (supports settings.reload_settings())
+    return send_from_directory(str(settings.IMG_DIR), urllib.parse.unquote(filename))
 
 
 def _safe_str(x: Optional[str]) -> str:
@@ -108,15 +111,15 @@ def _load_images_for_item(image_path: Optional[str]) -> List[str]:
     if not rel:
         return []
 
-    abs_dir = os.path.join(IMG_DIR, rel)
-    if not os.path.isdir(abs_dir):
+    abs_dir = settings.IMG_DIR / Path(rel)
+    if not abs_dir.is_dir():
         return []
 
-    files = []
+    files: List[str] = []
     try:
-        for fn in os.listdir(abs_dir):
-            if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                files.append(fn)
+        for p in abs_dir.iterdir():
+            if p.is_file() and p.name.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                files.append(p.name)
     except Exception:
         return []
 
@@ -142,7 +145,7 @@ def _api_base_url() -> str:
 
 
 def _api_key() -> str:
-    key = os.getenv("WARDROBE_API_KEY", "").strip()
+    key = (settings.API_KEY or "").strip()
     if not key:
         abort(500, description="WARDROBE_API_KEY is not set in environment.")
     return key
@@ -153,7 +156,7 @@ def _api_headers() -> Dict[str, str]:
 
 
 def _allow_local_noauth() -> bool:
-    return os.getenv("WARDROBE_ALLOW_LOCAL_NOAUTH", "0").strip() in {"1", "true", "True", "yes", "YES"}
+    return bool(getattr(settings, "ALLOW_LOCAL_NOAUTH", False))
 
 
 def _require_api_key() -> None:
@@ -320,7 +323,6 @@ def admin_save_item(item_id: int):
     _require_admin_local()
     user = request.args.get("user", "karen").strip().lower()
 
-    # Collect a conservative set of editable fields (others can be added later)
     editable_fields = [
         "name",
         "category",
@@ -346,7 +348,6 @@ def admin_save_item(item_id: int):
             else:
                 payload[f] = v.strip()
 
-    # Remove empty strings so PATCH doesn't overwrite with ""
     payload = {k: v for k, v in payload.items() if not (isinstance(v, str) and v == "")}
 
     api_url = f"{_api_base_url()}/api/v2/items/{item_id}"
@@ -355,7 +356,6 @@ def admin_save_item(item_id: int):
     if status not in (200, 204):
         abort(500, description=f"PATCH failed: {status} {body}")
 
-    # back to admin overview
     return redirect(f"/?user={urllib.parse.quote(user)}&mode=admin")
 
 
@@ -373,7 +373,7 @@ def admin_delete_item(item_id: int):
     return redirect(f"/?user={urllib.parse.quote(user)}&mode=admin")
 
 
-# --- GPT API ENDPOINTS (Legacy, keep for compatibility; now protected via X-API-Key) ---
+# --- GPT API ENDPOINTS (Legacy, keep for compatibility; protected via X-API-Key) ---
 @app.route("/api/v1/inventory", methods=["GET"])
 def api_get_inventory():
     _require_api_key()
@@ -391,7 +391,7 @@ def api_get_inventory():
 
 
 @app.route("/api/v1/item/<int:item_id>", methods=["GET"])
-def api_get_item_detail(item_id):
+def api_get_item_detail(item_id: int):
     _require_api_key()
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()

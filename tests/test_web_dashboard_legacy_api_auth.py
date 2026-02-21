@@ -1,9 +1,7 @@
 # FILE: tests/test_web_dashboard_legacy_api_auth.py
 from __future__ import annotations
 
-import os
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -42,55 +40,30 @@ def init_test_db(db_path: Path) -> None:
     conn.close()
 
 
-@pytest.fixture(scope="module")
-def flask_client(tmp_path_factory):
-    root = tmp_path_factory.mktemp("wardrobe_webdash")
-    db_path = root / "wardrobe_webdash.db"
-    img_dir = root / "images"
+@pytest.fixture()
+def flask_client(tmp_path, monkeypatch):
+    db_path = tmp_path / "wardrobe_webdash.db"
+    img_dir = tmp_path / "images"
 
     init_test_db(db_path)
     img_dir.mkdir(parents=True, exist_ok=True)
 
-    keys = [
-        "WARDROBE_DB_PATH",
-        "WARDROBE_IMG_DIR",
-        "WARDROBE_API_KEY",
-        "WARDROBE_ALLOW_LOCAL_NOAUTH",
-        "WARDROBE_ENV",
-        "WARDROBE_DEBUG",
-        "WARDROBE_MOUNT_FLASK",
-        "WARDROBE_ONTOLOGY_MODE",
-    ]
-    old = {k: os.environ.get(k) for k in keys}
+    monkeypatch.setenv("WARDROBE_DB_PATH", str(db_path))
+    monkeypatch.setenv("WARDROBE_IMG_DIR", str(img_dir))
+    monkeypatch.setenv("WARDROBE_API_KEY", "testkey")
+    monkeypatch.setenv("WARDROBE_ALLOW_LOCAL_NOAUTH", "0")
+    monkeypatch.setenv("WARDROBE_ENV", "test")
+    monkeypatch.setenv("WARDROBE_DEBUG", "0")
+    monkeypatch.setenv("WARDROBE_MOUNT_FLASK", "0")
+    monkeypatch.setenv("WARDROBE_ONTOLOGY_MODE", "off")
 
-    os.environ["WARDROBE_DB_PATH"] = str(db_path)
-    os.environ["WARDROBE_IMG_DIR"] = str(img_dir)
-    os.environ["WARDROBE_API_KEY"] = "testkey"
-    os.environ["WARDROBE_ALLOW_LOCAL_NOAUTH"] = "0"
-    os.environ["WARDROBE_ENV"] = "test"
-    os.environ["WARDROBE_DEBUG"] = "0"
-    os.environ["WARDROBE_MOUNT_FLASK"] = "0"
-    os.environ["WARDROBE_ONTOLOGY_MODE"] = "off"
+    from src import settings as settings_module
 
-    # IMPORTANT:
-    # Other tests import src.settings first; `from src import settings` can keep a stale
-    # package attribute even if sys.modules['src.settings'] was deleted.
-    # Purge the whole src package namespace for a clean import under this fixture env.
-    for name in list(sys.modules.keys()):
-        if name == "src" or name.startswith("src."):
-            del sys.modules[name]
+    settings_module.reload_settings()
 
     from src.web_dashboard import flask_app
 
-    client = flask_app.test_client()
-    yield client
-
-    # restore env
-    for k, v in old.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
+    return flask_app.test_client()
 
 
 def test_inventory_requires_api_key(flask_client):
