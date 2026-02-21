@@ -148,12 +148,25 @@ def _rmtree_robust(path: Path | str, ignore_errors: bool = False) -> None:
     path = Path(path)
     import stat
     import time
+    import inspect
 
-    def _onerror(func, p, exc_info):
+    has_onexc = "onexc" in inspect.signature(shutil.rmtree).parameters
+
+    def _make_writable(p) -> None:
         try:
             os.chmod(p, stat.S_IWRITE)
         except Exception:
             pass
+
+    def _onerror(func, p, exc_info):
+        _make_writable(p)
+        try:
+            func(p)
+        except Exception:
+            pass
+
+    def _onexc(func, p, exc):
+        _make_writable(p)
         try:
             func(p)
         except Exception:
@@ -163,8 +176,11 @@ def _rmtree_robust(path: Path | str, ignore_errors: bool = False) -> None:
         try:
             if not path.exists():
                 return
-            # We handle ignore_errors ourselves so we can keep the onerror behavior.
-            shutil.rmtree(path, onerror=_onerror)
+            # We handle ignore_errors ourselves so we can keep the retry behavior.
+            if has_onexc:
+                shutil.rmtree(path, onexc=_onexc)  # Python 3.12+: avoids DeprecationWarning
+            else:
+                shutil.rmtree(path, onerror=_onerror)
             return
         except Exception:
             if attempt == 2:
