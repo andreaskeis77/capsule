@@ -27,7 +27,9 @@ def init_test_db(db_path: Path):
             price TEXT,
             vision_description TEXT,
             image_path TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            color_variant TEXT,
+            needs_review INTEGER DEFAULT 0
         )
     """)
     conn.commit()

@@ -666,6 +666,85 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
     base_url = str(request.base_url).rstrip("/")
     return _row_to_item(row, base_url)
 
+@router.post("/items/validate", dependencies=[Depends(require_api_key)])
+def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any]:
+    """Dry-run: validate/normalize fields and image without writing DB or filesystem."""
+    rid = _request_id(request)
+
+    raw_color = payload.color_primary
+    canonical_color, _nr_color = _ontology_apply("color_primary", raw_color, rid)
+    derived_variant, derived_review = _derive_color_variant_and_review(raw_color, canonical_color, payload.color_variant)
+
+    canonical_category = None
+    if payload.category:
+        canonical_category, _ = _ontology_apply("category", payload.category, rid)
+
+    canonical_material = None
+    if payload.material_main:
+        canonical_material, _ = _ontology_apply("material_main", payload.material_main, rid)
+
+    canonical_fit = None
+    if payload.fit:
+        canonical_fit, _ = _ontology_apply("fit", payload.fit, rid)
+
+    canonical_collar = None
+    if payload.collar:
+        canonical_collar, _ = _ontology_apply("collar", payload.collar, rid)
+
+    # Image decode/normalize: never let PIL/base64 errors bubble as 500.
+    try:
+        raw_bytes = _decode_image_base64(payload.image_main_base64)
+    except Exception:
+        logger.exception("Validate image base64 decode failed", extra={"request_id": rid})
+        raise HTTPException(status_code=400, detail={"error": "ImageDecodeFailed", "stage": "base64", "request_id": rid})
+
+    if len(raw_bytes) > settings.MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail={"error": "ImageTooLarge", "request_id": rid})
+
+    try:
+        jpg_bytes = _normalize_image_to_jpg(raw_bytes)
+    except Exception:
+        logger.exception("Validate image normalize failed", extra={"request_id": rid})
+        raise HTTPException(status_code=400, detail={"error": "ImageDecodeFailed", "stage": "image", "request_id": rid})
+
+    width = None
+    height = None
+    try:
+        with Image.open(io.BytesIO(jpg_bytes)) as im2:
+            width, height = im2.size
+    except Exception:
+        # Non-fatal for validate output
+        pass
+
+    slug = _slugify(payload.name)
+    example_rel = str(Path(payload.user_id) / f"{slug}_NEW").replace("\\", "/")
+
+    return {
+        "ok": True,
+        "request_id": rid,
+        "example_image_path": example_rel,
+        "normalized_fields": {
+            "user_id": payload.user_id,
+            "name": payload.name,
+            "brand": payload.brand,
+            "category": canonical_category,
+            "color_primary": canonical_color,
+            "color_variant": derived_variant,
+            "needs_review": int(derived_review),
+            "material_main": canonical_material,
+            "fit": canonical_fit,
+            "collar": canonical_collar,
+            "price": payload.price,
+            "vision_description": payload.vision_description,
+        },
+        "normalized_image": {
+            "stored_ext": "jpg",
+            "bytes": len(jpg_bytes),
+            "width": width,
+            "height": height,
+            "max_dim": settings.IMAGE_MAX_DIM,
+        },
+    }
 
 @router.patch("/items/{item_id}", response_model=ItemResponse, dependencies=[Depends(require_api_key)])
 def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> ItemResponse:
