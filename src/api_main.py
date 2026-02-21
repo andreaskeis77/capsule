@@ -1,10 +1,10 @@
-# FILE: src/api_main.py
+﻿# FILE: src/api_main.py
 from __future__ import annotations
 
 import importlib
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -27,6 +27,18 @@ app = FastAPI(
 )
 
 API_V2_IMPORT_ERROR: Optional[str] = None
+
+
+@app.on_event("startup")
+def _startup_contracts() -> None:
+    """
+    Startup contracts (critical path):
+    - DB schema must be compatible with current API expectations.
+    Fail-fast if contract cannot be satisfied.
+    """
+    from src.db_schema import ensure_schema
+
+    ensure_schema()
 
 
 @app.middleware("http")
