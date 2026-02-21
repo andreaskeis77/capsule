@@ -8,7 +8,7 @@ hellblau:   { family: blue }
 marine:     { family: blue }
 navy:       { family: blue }
 kobaltblau: { family: blue }
-koenigsblau:{ family: blue }
+koenigsblau: { family: blue }
 königsblau: { family: blue }
 jeansblau:  { family: blue }
 tuerkis:    { family: blue }
@@ -21,7 +21,7 @@ salbei:     { family: green }
 oliv:       { family: green }
 olive:      { family: green }
 khaki:      { family: green }
-tannengruen:{ family: green }
+tannengruen: { family: green }
 tannengrün: { family: green }
 smaragd:    { family: green }
 limette:    { family: green }
@@ -92,5 +92,5 @@ weiss:      { family: white }
 weiß:       { family: white }
 elfenbein:  { family: beige }    # meistens warm -> beige/offwhite
 grau:       { family: grey }
-graumeliert:{ family: grey }
-grau-meliert:{ family: grey }
+graumeliert: { family: grey }
+grau-meliert: { family: grey }
