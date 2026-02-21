@@ -711,11 +711,11 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
         conn.close()
         raise HTTPException(status_code=400, detail={"error": "NoFields", "request_id": rid})
 
-    # Color logic
+    # --- Color logic (normalize + derive review/variant) ---
     if "color_primary" in updates:
         raw_color = updates.get("color_primary")
         explicit_variant = updates.get("color_variant")
-        canonical_color, nr_color = _ontology_apply("color_primary", raw_color, rid)
+        canonical_color, _ = _ontology_apply("color_primary", raw_color, rid)
         updates["color_primary"] = canonical_color
         derived_variant, derived_review = _derive_color_variant_and_review(raw_color, canonical_color, explicit_variant)
         if "color_variant" not in updates:
@@ -726,7 +726,7 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
             extra={"request_id": rid},
         )
 
-    # Other ontology fields (hard fail)
+    # --- Other ontology fields (hard fail) ---
     if "category" in updates and updates["category"] is not None:
         updates["category"], _ = _ontology_apply("category", updates["category"], rid)
     if "material_main" in updates and updates["material_main"] is not None:
@@ -736,8 +736,12 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
     if "collar" in updates and updates["collar"] is not None:
         updates["collar"], _ = _ontology_apply("collar", updates["collar"], rid)
 
-    # Optional folder rename/move on name/user change
+    # --- Optional folder rename/move on name/user change (SAGA SAFE) ---
     old_rel = existing["image_path"]
+    moved = False
+    moved_src: Optional[Path] = None
+    moved_dst: Optional[Path] = None
+
     if old_rel and ("name" in updates or "user_id" in updates):
         old_user = existing["user_id"]
         old_name = existing["name"]
@@ -748,25 +752,45 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
         new_slug = _slugify(new_name)
         new_rel = str(Path(new_user) / f"{new_slug}_{old_id}").replace("\\", "/")
 
+        src_dir = settings.IMG_DIR / Path(old_rel)
+        dst_dir = settings.IMG_DIR / Path(new_rel)
+
         try:
-            src_dir = settings.IMG_DIR / Path(old_rel)
-            dst_dir = settings.IMG_DIR / Path(new_rel)
             if src_dir.exists():
                 dst_dir.parent.mkdir(parents=True, exist_ok=True)
                 if not _safe_under(settings.IMG_DIR, src_dir) or not _safe_under(settings.IMG_DIR, dst_dir):
                     raise RuntimeError("Jail check failed for rename/move")
                 if src_dir.resolve() != dst_dir.resolve():
-                    shutil.move(str(src_dir), str(dst_dir))
-                    updates["image_path"] = new_rel
-                    logger.info(f"Moved image folder {old_rel} -> {new_rel}", extra={"request_id": rid})
+                    if dst_dir.exists():
+                        logger.warning(
+                            f"Folder move skipped (destination exists) src={old_rel} dst={new_rel}",
+                            extra={"request_id": rid},
+                        )
+                    else:
+                        try:
+                            # prefer atomic rename (same volume)
+                            src_dir.rename(dst_dir)
+                        except Exception:
+                            # fallback (may copy+delete)
+                            shutil.move(str(src_dir), str(dst_dir))
+                        moved = True
+                        moved_src = src_dir
+                        moved_dst = dst_dir
+                        updates["image_path"] = new_rel
+                        logger.info(f"Moved image folder {old_rel} -> {new_rel}", extra={"request_id": rid})
         except Exception:
+            # Do NOT fail the whole metadata update if rename fails.
             logger.exception("Folder move failed (continuing metadata update)", extra={"request_id": rid})
             updates.pop("image_path", None)
+            moved = False
+            moved_src = None
+            moved_dst = None
 
     allowed = {
         "user_id", "name", "brand", "category",
         "color_primary", "color_variant", "needs_review",
-        "material_main", "fit", "collar", "price", "vision_description", "image_path"
+        "material_main", "fit", "collar", "price", "vision_description",
+        "image_path",
     }
 
     set_cols = []
@@ -788,7 +812,21 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
         conn.commit()
     except Exception:
         conn.rollback()
-        conn.close()
+
+        # If we moved the folder but DB update failed, roll the move back to keep consistency.
+        if moved and moved_src and moved_dst and moved_dst.exists():
+            try:
+                moved_src.parent.mkdir(parents=True, exist_ok=True)
+                if not moved_src.exists():
+                    try:
+                        moved_dst.rename(moved_src)
+                    except Exception:
+                        shutil.move(str(moved_dst), str(moved_src))
+                logger.warning("Rolled back folder move after DB failure", extra={"request_id": rid})
+            except Exception:
+                # Worst case: folder moved but DB not updated -> log hard; we still return 500.
+                logger.exception("Rollback of folder move failed", extra={"request_id": rid})
+
         logger.exception("Update failed", extra={"request_id": rid})
         raise HTTPException(status_code=500, detail={"error": "UpdateFailed", "request_id": rid})
     finally:
@@ -802,7 +840,6 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
 
     base_url = str(request.base_url).rstrip("/")
     return _row_to_item(row, base_url)
-
 
 @router.delete("/items/{item_id}", response_model=DeleteResponse, dependencies=[Depends(require_api_key)])
 def delete_item(request: Request, item_id: int) -> DeleteResponse:

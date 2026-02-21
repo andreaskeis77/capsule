@@ -147,12 +147,29 @@ def test_create_update_delete(client):
     assert created["main_image_url"] is not None
     item_id = created["id"]
 
-    # Folder exists after create
     img_dir = Path(os.environ["WARDROBE_IMG_DIR"])
-    folder = img_dir / Path(created["image_path"])
-    assert folder.exists()
-    assert (folder / "main.jpg").exists()
+    folder_old = img_dir / Path(created["image_path"])
+    assert folder_old.exists()
+    assert (folder_old / "main.jpg").exists()
 
+    # Rename triggers folder move
+    r_name = client.patch(
+        f"/api/v2/items/{item_id}",
+        json={"name": "Roter Blazer"},
+        headers={"X-API-Key": "testkey"},
+    )
+    assert r_name.status_code == 200, r_name.text
+    renamed = r_name.json()
+    assert renamed["name"] == "Roter Blazer"
+    assert renamed["image_path"].startswith("karen/")
+    assert renamed["image_path"] != created["image_path"]
+
+    folder_new = img_dir / Path(renamed["image_path"])
+    assert folder_new.exists()
+    assert (folder_new / "main.jpg").exists()
+    assert not folder_old.exists()
+
+    # Metadata update should still work after rename
     r2 = client.patch(
         f"/api/v2/items/{item_id}",
         json={"brand": "Adidas"},
@@ -167,7 +184,7 @@ def test_create_update_delete(client):
     assert r3.json()["deleted"] is True
 
     # Folder should no longer exist in IMG_DIR (moved to trash + best-effort deleted)
-    assert not folder.exists()
+    assert not folder_new.exists()
 
     # DB row is gone
     conn = sqlite3.connect(os.environ["WARDROBE_DB_PATH"])
