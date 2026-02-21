@@ -32,6 +32,7 @@ API_KEY = os.environ.get("WARDROBE_API_KEY", "").strip()
 # Storage paths
 DB_PATH = Path(os.environ.get("WARDROBE_DB_PATH", str(BASE_DIR / "03_database" / "wardrobe.db")))
 IMG_DIR = Path(os.environ.get("WARDROBE_IMG_DIR", str(BASE_DIR / "02_wardrobe_images")))
+TRASH_DIR = Path(os.environ.get("WARDROBE_TRASH_DIR", str(BASE_DIR / "04_user_data" / "trash_images")))
 
 # Logs
 LOG_DIR = BASE_DIR / "04_user_data" / "logs"

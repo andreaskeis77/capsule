@@ -1,4 +1,3 @@
-# FILE: src/api_v2.py
 from __future__ import annotations
 
 import base64
@@ -54,6 +53,14 @@ def init_ontology() -> None:
         if "tolerant_fields" in sig.parameters:
             kwargs["tolerant_fields"] = settings.ONTOLOGY_TOLERANT_FIELDS
 
+        # Required file params
+        if "ontology_dir" in sig.parameters:
+            kwargs["ontology_dir"] = settings.ONTOLOGY_DIR
+        if "overrides_file" in sig.parameters:
+            kwargs["overrides_file"] = settings.ONTOLOGY_OVERRIDES_FILE
+        if "color_lexicon_file" in sig.parameters:
+            kwargs["color_lexicon_file"] = settings.ONTOLOGY_COLOR_LEXICON_FILE
+
         ONTOLOGY = OntologyManager.load_from_files(**kwargs)  # type: ignore[arg-type]
         logger.info(
             "Ontology loaded",
@@ -105,10 +112,16 @@ def _slugify(name: str) -> str:
 
 
 def _safe_under(base: Path, target: Path) -> bool:
+    """Return True if target resolves under base (no path traversal)."""
     try:
         base_r = base.resolve()
         targ_r = target.resolve()
-        return str(targ_r).startswith(str(base_r))
+        # Python 3.9+: Path.is_relative_to exists
+        if hasattr(targ_r, "is_relative_to"):
+            return targ_r.is_relative_to(base_r)  # type: ignore[attr-defined]
+        # Fallback: relative_to raises ValueError if not under base
+        targ_r.relative_to(base_r)
+        return True
     except Exception:
         return False
 
@@ -238,58 +251,62 @@ def _derive_color_variant_and_review(
     canonical_color: Optional[str],
     explicit_variant: Optional[str],
 ) -> Tuple[Optional[str], int]:
+    """
+    Policy:
+    - If user provided explicit color_variant -> use it, needs_review depends on ontology mismatch
+    - Else if raw_color != canonical_color -> store raw as color_variant and needs_review=1
+    - Else -> no variant, needs_review=0
+    """
     raw = (raw_color or "").strip()
-    variant = (explicit_variant or "").strip() if explicit_variant else ""
+    canon = (canonical_color or "").strip()
 
-    if raw and not variant:
-        if canonical_color is None:
-            return raw, 1
-        if raw.lower() != canonical_color.lower():
-            return raw, 0
-        return None, 0
+    if explicit_variant is not None:
+        v = explicit_variant.strip() or None
+        needs_review = 1 if (raw and canon and raw.lower() != canon.lower()) else 0
+        return v, needs_review
 
-    if variant:
-        if canonical_color is None:
-            return variant, 1
-        return variant, 0
+    if raw and canon and raw.lower() != canon.lower():
+        return raw, 1
 
     return None, 0
 
 
-def _heuristic_color_family_suggestions(text: str) -> List[str]:
-    """Small heuristic for better GPT prompts (no spam)."""
-    t = (text or "").lower()
-    if not t:
-        return []
-    if "teal" in t:
-        return ["blue", "green"]
-    if "turquoise" in t or "tuerkis" in t or "tÃ¼rkis" in t:
-        return ["blue", "green"]
-    if "offwhite" in t or "off-white" in t:
-        return ["white", "beige"]
-    return []
+class ItemCreateRequest(BaseModel):
+    user_id: str = Field(..., description="andreas|karen")
+    name: str
+    brand: Optional[str] = None
+    category: Optional[str] = None
+    color_primary: Optional[str] = None
+    color_variant: Optional[str] = None
+    material_main: Optional[str] = None
+    fit: Optional[str] = None
+    collar: Optional[str] = None
+    price: Optional[str] = None
+    vision_description: Optional[str] = None
+
+    image_main_base64: str = Field(..., description="Base64 or data URL")
+    image_ext: Optional[str] = Field(None, description="jpg|png|webp etc; server stores main.jpg")
 
 
-class HealthResponse(BaseModel):
-    status: str
-
-
-class CategoryInfo(BaseModel):
-    id: str
-    label_de: Optional[str] = None
-    label_en: Optional[str] = None
-    parent_id: Optional[str] = None
-
-
-class CategoriesResponse(BaseModel):
-    categories: List[CategoryInfo]
+class ItemUpdateRequest(BaseModel):
+    user_id: Optional[str] = None
+    name: Optional[str] = None
+    brand: Optional[str] = None
+    category: Optional[str] = None
+    color_primary: Optional[str] = None
+    color_variant: Optional[str] = None
+    material_main: Optional[str] = None
+    fit: Optional[str] = None
+    collar: Optional[str] = None
+    price: Optional[str] = None
+    vision_description: Optional[str] = None
 
 
 class ItemSummary(BaseModel):
     id: int
     name: str
-    category: Optional[str] = None
-    color_primary: Optional[str] = None
+    category: Optional[str]
+    color_primary: Optional[str]
     color_variant: Optional[str] = None
     needs_review: int = 0
 
@@ -303,67 +320,21 @@ class ItemResponse(BaseModel):
     id: int
     user_id: str
     name: str
-    brand: Optional[str] = None
-    category: Optional[str] = None
-    color_primary: Optional[str] = None
+    brand: Optional[str]
+    category: Optional[str]
+    color_primary: Optional[str]
     color_variant: Optional[str] = None
     needs_review: int = 0
-    material_main: Optional[str] = None
-    fit: Optional[str] = None
-    collar: Optional[str] = None
-    price: Optional[str] = None
-    vision_description: Optional[str] = None
-    image_path: Optional[str] = None
-    created_at: Optional[str] = None
+    material_main: Optional[str]
+    fit: Optional[str]
+    collar: Optional[str]
+    price: Optional[str]
+    vision_description: Optional[str]
+    image_path: Optional[str]
+    created_at: str
+
     main_image_url: Optional[str] = None
     image_urls: List[str] = []
-
-
-class ReviewItem(BaseModel):
-    id: int
-    name: str
-    category: Optional[str] = None
-    color_primary: Optional[str] = None
-    color_variant: Optional[str] = None
-    needs_review: int = 1
-    color_review_suggestions: List[str] = []
-
-
-class ReviewQueueResponse(BaseModel):
-    user: str
-    total: int
-    items: List[ReviewItem]
-
-
-class ItemCreateRequest(BaseModel):
-    user_id: str = Field(..., pattern="^(andreas|karen)$")
-    name: str = Field(..., min_length=1)
-    brand: Optional[str] = None
-    category: Optional[str] = None
-    color_primary: Optional[str] = None
-    color_variant: Optional[str] = None
-    material_main: Optional[str] = None
-    fit: Optional[str] = None
-    collar: Optional[str] = None
-    price: Optional[str] = None
-    vision_description: Optional[str] = None
-    image_main_base64: str
-    image_ext: Optional[str] = Field(None, pattern="^(jpg|jpeg|png|webp)$")
-
-
-class ItemUpdateRequest(BaseModel):
-    user_id: Optional[str] = Field(None, pattern="^(andreas|karen)$")
-    name: Optional[str] = None
-    brand: Optional[str] = None
-    category: Optional[str] = None
-    color_primary: Optional[str] = None
-    color_variant: Optional[str] = None
-    needs_review: Optional[int] = Field(None, ge=0, le=1)
-    material_main: Optional[str] = None
-    fit: Optional[str] = None
-    collar: Optional[str] = None
-    price: Optional[str] = None
-    vision_description: Optional[str] = None
 
 
 class DeleteResponse(BaseModel):
@@ -372,62 +343,25 @@ class DeleteResponse(BaseModel):
     image_path: str
 
 
-@router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    return HealthResponse(status="ok")
+class ReviewItem(BaseModel):
+    id: int
+    name: str
+    category: Optional[str]
+    color_primary: Optional[str]
+    color_variant: Optional[str]
+    needs_review: int
+    suggestions: List[str] = []
 
 
-@router.get("/ontology", dependencies=[Depends(require_api_key)])
-def ontology_info() -> Dict[str, Any]:
-    if ONTOLOGY is None:
-        return {"enabled": False, "mode": settings.ONTOLOGY_MODE}
-
-    return {
-        "enabled": True,
-        "mode": settings.ONTOLOGY_MODE,
-        "allow_legacy": settings.ONTOLOGY_ALLOW_LEGACY,
-        "thresholds": {"fuzzy": settings.ONTOLOGY_FUZZY_THRESHOLD, "suggest": settings.ONTOLOGY_SUGGEST_THRESHOLD},
-        "tolerant_fields": sorted(settings.ONTOLOGY_TOLERANT_FIELDS),
-        "categories_count": len(ONTOLOGY.categories),
-        "colors": [v.get("value") for v in ONTOLOGY.value_sets.get("color_primary", [])],
-        "fits": [v.get("value") for v in ONTOLOGY.value_sets.get("fit", [])],
-        "collars": [v.get("value") for v in ONTOLOGY.value_sets.get("collar", [])],
-        "materials_count": len(ONTOLOGY.materials),
-        "legacy_values": ONTOLOGY.legacy,
-    }
+class ReviewQueueResponse(BaseModel):
+    user: str
+    total: int
+    items: List[ReviewItem]
 
 
-@router.get("/ontology/categories", response_model=CategoriesResponse, dependencies=[Depends(require_api_key)])
-def ontology_categories() -> CategoriesResponse:
-    if ONTOLOGY is None:
-        return CategoriesResponse(categories=[])
-    cats = [
-        CategoryInfo(
-            id=c.get("id"),
-            label_de=c.get("label_de"),
-            label_en=c.get("label_en"),
-            parent_id=c.get("parent_id"),
-        )
-        for c in (ONTOLOGY.categories or [])
-        if c.get("id")
-    ]
-    return CategoriesResponse(categories=cats)
-
-
-@router.get("/ontology/suggest", dependencies=[Depends(require_api_key)])
-def ontology_suggest(field: str, value: str) -> Dict[str, Any]:
-    if ONTOLOGY is None:
-        return {"field": field, "value": value, "canonical": value, "matched_by": "none", "confidence": 0.0, "suggestions": []}
-    nr = ONTOLOGY.normalize_field(field, value)
-    return {
-        "field": field,
-        "value": value,
-        "canonical": nr.canonical,
-        "matched_by": nr.matched_by,
-        "confidence": nr.confidence,
-        "meta": nr.meta,
-        "suggestions": [{"canonical": s.canonical, "score": s.score, "label": s.label} for s in (nr.suggestions or [])],
-    }
+@router.get("/health", include_in_schema=False)
+def health():
+    return {"status": "ok"}
 
 
 def _row_to_item(row: sqlite3.Row, base_url: str) -> ItemResponse:
@@ -523,19 +457,10 @@ def review_queue(
     for r in rows:
         variant = r["color_variant"]
         suggestions: List[str] = []
-
-        # Try ontology suggest on variant (may be empty)
+        # Use ontology suggestions if available
         if ONTOLOGY is not None and variant:
             nr = ONTOLOGY.normalize_field("color_primary", variant)
-            if nr.canonical:
-                suggestions = [nr.canonical]
-            elif nr.suggestions:
-                suggestions = [s.canonical for s in nr.suggestions[:3]]
-
-        # Add small heuristics (only if still empty)
-        if not suggestions and variant:
-            suggestions = _heuristic_color_family_suggestions(variant)
-
+            suggestions = [s.canonical for s in (nr.suggestions or [])]
         items.append(
             ReviewItem(
                 id=r["id"],
@@ -543,28 +468,25 @@ def review_queue(
                 category=r["category"],
                 color_primary=r["color_primary"],
                 color_variant=variant,
-                needs_review=int(r["needs_review"] or 1),
-                color_review_suggestions=suggestions,
+                needs_review=int(r["needs_review"] or 0),
+                suggestions=suggestions,
             )
         )
-
-    logger.info(
-        f"Review queue user={user} total={total} limit={limit} offset={offset}",
-        extra={"request_id": rid},
-    )
 
     return ReviewQueueResponse(user=user, total=total, items=items)
 
 
 @router.get("/items/{item_id}", response_model=ItemResponse, dependencies=[Depends(require_api_key)])
 def get_item(request: Request, item_id: int) -> ItemResponse:
+    rid = _request_id(request)
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
     row = cur.fetchone()
     conn.close()
     if not row:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail={"error": "NotFound", "request_id": rid})
+
     base_url = str(request.base_url).rstrip("/")
     return _row_to_item(row, base_url)
 
@@ -614,16 +536,23 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         logger.exception("Image normalize failed", extra={"request_id": rid})
         raise HTTPException(status_code=400, detail={"error": "ImageDecodeFailed", "stage": "image", "request_id": rid})
 
+    if payload.user_id not in {"andreas", "karen"}:
+        raise HTTPException(status_code=400, detail={"error": "InvalidUser", "request_id": rid})
+
     conn = db_conn()
     cur = conn.cursor()
+
+    item_id = None
+    abs_dir: Optional[Path] = None
 
     try:
         cur.execute(
             """
             INSERT INTO items (
-              user_id, name, brand, category,
-              color_primary, color_variant, needs_review,
-              material_main, fit, collar, price, vision_description
+                user_id, name, brand, category,
+                color_primary, color_variant, needs_review,
+                material_main, fit, collar,
+                price, vision_description
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -655,15 +584,16 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         cur.execute("UPDATE items SET image_path = ? WHERE id = ?", (str(rel_dir).replace("\\", "/"), item_id))
         conn.commit()
 
-    except Exception as e:
+    except Exception:
         conn.rollback()
         try:
-            cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
-            conn.commit()
+            if item_id is not None:
+                cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
+                conn.commit()
         except Exception:
             pass
         try:
-            if "abs_dir" in locals() and abs_dir.exists():
+            if abs_dir is not None and abs_dir.exists():
                 _rmtree_robust(abs_dir, ignore_errors=True)
         except Exception:
             pass
@@ -681,6 +611,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
 
     base_url = str(request.base_url).rstrip("/")
     return _row_to_item(row, base_url)
+
 
 @router.post("/items/validate", dependencies=[Depends(require_api_key)])
 def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any]:
@@ -761,6 +692,7 @@ def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any
             "max_dim": settings.IMAGE_MAX_DIM,
         },
     }
+
 
 @router.patch("/items/{item_id}", response_model=ItemResponse, dependencies=[Depends(require_api_key)])
 def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> ItemResponse:
@@ -884,25 +816,72 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
         conn.close()
         raise HTTPException(status_code=404, detail={"error": "NotFound", "request_id": rid})
 
-    image_path = row["image_path"]
-    abs_dir = settings.IMG_DIR / Path(image_path) if image_path else None
+    image_path = (row["image_path"] or "").strip()
+    src_dir: Optional[Path] = (settings.IMG_DIR / Path(image_path)) if image_path else None
+    trashed_dir: Optional[Path] = None
 
     try:
-        if abs_dir and abs_dir.exists():
-            if not _safe_under(settings.IMG_DIR, abs_dir):
+        # 1) If images exist: move them to TRASH first (reversible) so a DB failure
+        #    does not leave the DB pointing to a missing folder.
+        if src_dir and src_dir.exists():
+            if not _safe_under(settings.IMG_DIR, src_dir):
                 raise HTTPException(status_code=400, detail={"error": "JailCheckFailed", "request_id": rid})
-            _rmtree_robust(abs_dir, ignore_errors=False)
 
+            rel = Path(image_path)
+
+            # Guard against absolute paths / traversal
+            if rel.is_absolute() or ".." in rel.parts:
+                raise HTTPException(status_code=400, detail={"error": "JailCheckFailed", "request_id": rid})
+
+            base_trash = settings.TRASH_DIR
+            base_trash.mkdir(parents=True, exist_ok=True)
+
+            # Keep sub-structure but ensure uniqueness
+            candidate = base_trash / rel
+            if candidate.exists():
+                candidate = base_trash / rel.parent / f"{rel.name}__deleted__{item_id}__{rid[:8]}"
+
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+
+            if not _safe_under(base_trash, candidate):
+                raise HTTPException(status_code=400, detail={"error": "JailCheckFailed", "request_id": rid})
+
+            # Atomic move within same volume
+            src_dir.rename(candidate)
+            trashed_dir = candidate
+
+        # 2) Delete DB row (authoritative)
         cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
         conn.commit()
 
     except HTTPException:
+        # Attempt to restore folder if we already moved it
+        if trashed_dir and src_dir and trashed_dir.exists():
+            try:
+                src_dir.parent.mkdir(parents=True, exist_ok=True)
+                trashed_dir.rename(src_dir)
+            except Exception:
+                logger.exception("Rollback move failed after HTTPException", extra={"request_id": rid})
         raise
     except Exception:
         conn.rollback()
+        # If DB delete failed, move folder back to original location
+        if trashed_dir and src_dir and trashed_dir.exists():
+            try:
+                src_dir.parent.mkdir(parents=True, exist_ok=True)
+                trashed_dir.rename(src_dir)
+            except Exception:
+                logger.exception("Rollback move failed after DeleteFailed", extra={"request_id": rid})
         logger.exception("Delete failed", extra={"request_id": rid})
         raise HTTPException(status_code=500, detail={"error": "DeleteFailed", "request_id": rid})
     finally:
         conn.close()
 
-    return DeleteResponse(deleted=True, id=item_id, image_path=image_path or "")
+    # 3) Best-effort physical deletion (images already out of IMG_DIR)
+    if trashed_dir and trashed_dir.exists():
+        try:
+            _rmtree_robust(trashed_dir, ignore_errors=True)
+        except Exception:
+            logger.exception("Trash cleanup failed (best effort)", extra={"request_id": rid})
+
+    return DeleteResponse(deleted=True, id=item_id, image_path=image_path)

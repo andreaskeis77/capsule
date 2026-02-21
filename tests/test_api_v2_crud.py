@@ -1,4 +1,5 @@
 # FILE: tests/test_api_v2_crud.py
+import os
 import sqlite3
 import base64
 import io
@@ -13,7 +14,8 @@ def init_test_db(db_path: Path):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT NOT NULL,
@@ -21,17 +23,18 @@ def init_test_db(db_path: Path):
             brand TEXT,
             category TEXT,
             color_primary TEXT,
+            color_variant TEXT,
+            needs_review INTEGER DEFAULT 0,
             material_main TEXT,
             fit TEXT,
             collar TEXT,
             price TEXT,
             vision_description TEXT,
             image_path TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            color_variant TEXT,
-            needs_review INTEGER DEFAULT 0
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -47,11 +50,16 @@ def make_test_jpeg_b64(size=(50, 50)) -> str:
 def client(tmp_path, monkeypatch):
     db_path = tmp_path / "wardrobe_test.db"
     img_dir = tmp_path / "images"
+    trash_dir = tmp_path / "trash_images"
+
     init_test_db(db_path)
     img_dir.mkdir(parents=True, exist_ok=True)
+    trash_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("WARDROBE_DB_PATH", str(db_path))
     monkeypatch.setenv("WARDROBE_IMG_DIR", str(img_dir))
+    monkeypatch.setenv("WARDROBE_TRASH_DIR", str(trash_dir))
+
     monkeypatch.setenv("WARDROBE_API_KEY", "testkey")
     monkeypatch.setenv("WARDROBE_ENV", "test")
     monkeypatch.setenv("WARDROBE_DEBUG", "1")
@@ -66,6 +74,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("WARDROBE_ONTOLOGY_MODE", "off")
 
     from src.api_main import app
+
     return TestClient(app)
 
 
@@ -99,6 +108,12 @@ def test_create_update_delete(client):
     assert created["main_image_url"] is not None
     item_id = created["id"]
 
+    # Folder exists after create
+    img_dir = Path(os.environ["WARDROBE_IMG_DIR"])
+    folder = img_dir / Path(created["image_path"])
+    assert folder.exists()
+    assert (folder / "main.jpg").exists()
+
     r2 = client.patch(
         f"/api/v2/items/{item_id}",
         json={"brand": "Adidas"},
@@ -112,6 +127,18 @@ def test_create_update_delete(client):
     assert r3.status_code == 200, r3.text
     assert r3.json()["deleted"] is True
 
+    # Folder should no longer exist in IMG_DIR (it is moved to trash + best-effort deleted)
+    assert not folder.exists()
+
+    # DB row is gone
+    conn = sqlite3.connect(os.environ["WARDROBE_DB_PATH"])
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+    row = cur.fetchone()
+    conn.close()
+    assert row is None
+
 
 def test_validate_endpoint(client):
     b64 = make_test_jpeg_b64()
@@ -124,15 +151,12 @@ def test_validate_endpoint(client):
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["ok"] is True
-    assert "example_image_path" in data
     assert data["normalized_image"]["stored_ext"] == "jpg"
+    assert data["example_image_path"].startswith("karen/")
 
 
 def test_invalid_base64(client):
-    payload = {
-        "user_id": "karen",
-        "name": "Bad",
-        "image_main_base64": "!!!notbase64!!!",
-    }
+    payload = {"user_id": "karen", "name": "Bad", "image_main_base64": "notbase64"}
     r = client.post("/api/v2/items", json=payload, headers={"X-API-Key": "testkey"})
     assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "ImageDecodeFailed"
