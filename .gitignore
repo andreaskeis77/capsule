@@ -5,6 +5,14 @@ __pycache__/
 *.pyd
 .venv/
 env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets / local config (NEVER commit)
+.env
+.env.*
+!.env.example
 
 # VS Code
 .vscode/
@@ -35,5 +43,8 @@ ngrok.exe
 # Runtime artifacts
 logs/
 docs/_snapshot/
-__pycache__/
-*.pyc
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml

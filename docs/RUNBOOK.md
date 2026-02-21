@@ -1,6 +1,12 @@
 # Runbook – Start/Stop/Debug
 
 ## Quick Start (empfohlen)
+
+0) Konfiguration anlegen (einmalig)
+   - Kopiere `.env.example` → `.env`
+   - Setze mindestens `WARDROBE_API_KEY` (wird für API-Auth, Admin-Save/Delete und GPT Actions benötigt)
+   - Hinweis: `.env` ist absichtlich NICHT versioniert (Security Baseline)
+
 1) venv aktivieren:
    - PowerShell: `.\.venv\Scripts\Activate.ps1`
 
@@ -39,7 +45,7 @@ Rotation: Batch rotiert in `*_YYYYMMDD-HHMMSS.log`
 
 ## Häufige Probleme
 
-### Batch hängt bei "Warte auf Readiness..."
+### Batch hängt bei "Warte auf Readiness."
 Check:
 - `http://127.0.0.1:5002/healthz`
 - `logs/server.err.log` (Tail)
