@@ -7,6 +7,14 @@ from pathlib import Path
 
 import uvicorn
 
+from dotenv import load_dotenv
+import os
+
+# Load .env from project root
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+
 def _ensure_project_root_on_syspath() -> Path:
     """
     Make sure project root is on sys.path even if this file is executed as a script.
