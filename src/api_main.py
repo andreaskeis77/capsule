@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import importlib
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from a2wsgi import WSGIMiddleware
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src import settings
-from src.logging_config import setup_logging, request_id_ctx
+from src.db_schema import ensure_schema
+from src.error_contract import normalize_detail, validation_detail
+from src.logging_config import request_id_ctx, setup_logging
 
 # --- Logging init ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,28 +36,21 @@ async def lifespan(app: FastAPI):
     Lifespan contracts (critical path):
     - Settings are reloaded (supports tests / env overrides).
     - DB schema must be compatible with current API expectations.
-    Fail-fast if contract cannot be satisfied.
+    - Ontology init (non-fatal)
     """
-    # Refresh settings in case env was changed before startup (tests rely on this)
     settings.reload_settings()
-
-    from src.db_schema import ensure_schema
-
     ensure_schema()
 
-    # Optional: ensure ontology init happens after settings are final
     try:
         from src import api_v2
 
         api_v2.init_ontology()
     except Exception:
-        # Non-fatal
         logger.exception("Ontology init failed; continuing without ontology.", extra={"request_id": "-"})
 
     yield
 
 
-# --- FastAPI app ---
 app = FastAPI(
     title="Wardrobe Control API",
     description="CRUD API + legacy dashboard (Flask) mounted on root.",
@@ -62,12 +60,38 @@ app = FastAPI(
 
 
 @app.middleware("http")
-async def add_request_id(request: Request, call_next):
+async def request_context_and_access_log(request: Request, call_next):
     rid = request.headers.get("X-Request-Id") or str(uuid.uuid4())
-    request_id_ctx.set(rid)
-    request.state.request_id = rid  # important: api_v2 reads this
-    response = await call_next(request)
+    token = request_id_ctx.set(rid)
+    request.state.request_id = rid
+
+    start = time.perf_counter()
+    try:
+        # With our exception handlers, this should return a Response even on errors.
+        response = await call_next(request)
+    except Exception:
+        # Last-resort guard: never leak exceptions outside middleware.
+        logger.exception("Exception escaped request pipeline", extra={"request_id": rid})
+        detail = normalize_detail({"error": "UnhandledServerError"}, 500, rid)
+        response = JSONResponse(status_code=500, content={"detail": detail})
+    finally:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+
     response.headers["X-Request-Id"] = rid
+
+    # Access log (structured via extra)
+    logger.info(
+        "HTTP",
+        extra={
+            "request_id": rid,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": getattr(response, "status_code", None),
+            "duration_ms": duration_ms,
+        },
+    )
+
+    request_id_ctx.reset(token)
     return response
 
 
@@ -77,7 +101,7 @@ def healthz():
 
 
 @app.get("/debug/routes", include_in_schema=False)
-def debug_routes():
+def debug_routes(request: Request):
     routes = []
     for r in app.router.routes:
         methods = getattr(r, "methods", None)
@@ -88,7 +112,30 @@ def debug_routes():
                 "methods": sorted(list(methods)) if methods else [],
             }
         )
-    return {"count": len(routes), "routes": routes, "request_id": request_id_ctx.get()}
+    rid = getattr(request.state, "request_id", "-")
+    return {"count": len(routes), "routes": routes, "request_id": rid}
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request: Request, exc: RequestValidationError):
+    rid = getattr(request.state, "request_id", "-")
+    detail = validation_detail(exc.errors(), rid)
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    rid = getattr(request.state, "request_id", "-")
+    detail = normalize_detail(getattr(exc, "detail", None), exc.status_code, rid)
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    rid = getattr(request.state, "request_id", "-")
+    logger.exception("Unhandled server error", extra={"request_id": rid})
+    detail = normalize_detail({"error": "UnhandledServerError"}, 500, rid)
+    return JSONResponse(status_code=500, content={"detail": detail})
 
 
 def _mount_api_v2() -> None:
@@ -138,6 +185,20 @@ def _mount_api_v2() -> None:
 _mount_api_v2()
 
 
+# --- IMPORTANT: prevent Flask mount from turning missing /api/v2/* into HTML 404 ---
+@app.api_route(
+    "/api/v2/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def api_v2_fallback(path: str, request: Request):
+    rid = getattr(request.state, "request_id", "-")
+    raise HTTPException(
+        status_code=404,
+        detail={"error": "NotFound", "request_id": rid, "path": f"/api/v2/{path}"},
+    )
+
+
 # --- Mount legacy Flask dashboard on root (optional) ---
 if getattr(settings, "MOUNT_FLASK", True):
     try:
@@ -149,10 +210,3 @@ if getattr(settings, "MOUNT_FLASK", True):
         logger.exception("Failed to mount Flask dashboard; API still available.", extra={"request_id": "-"})
 else:
     logger.info("Flask mount disabled (WARDROBE_MOUNT_FLASK=0)", extra={"request_id": "-"})
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    rid = getattr(request.state, "request_id", "-")
-    logger.exception("Unhandled server error", extra={"request_id": rid})
-    return JSONResponse(status_code=500, content={"error": "UnhandledServerError", "request_id": rid})
