@@ -72,10 +72,13 @@ def flask_client(tmp_path_factory):
     os.environ["WARDROBE_MOUNT_FLASK"] = "0"
     os.environ["WARDROBE_ONTOLOGY_MODE"] = "off"
 
-    # Force fresh import so settings/web_dashboard picks up env reliably
-    for mod in ("src.settings", "src.web_dashboard"):
-        if mod in sys.modules:
-            del sys.modules[mod]
+    # IMPORTANT:
+    # Other tests import src.settings first; `from src import settings` can keep a stale
+    # package attribute even if sys.modules['src.settings'] was deleted.
+    # Purge the whole src package namespace for a clean import under this fixture env.
+    for name in list(sys.modules.keys()):
+        if name == "src" or name.startswith("src."):
+            del sys.modules[name]
 
     from src.web_dashboard import flask_app
 
