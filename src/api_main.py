@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from a2wsgi import WSGIMiddleware
 
+from src import settings
 from src.logging_config import setup_logging, request_id_ctx
 
 # --- Logging init ---
@@ -17,28 +19,46 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 setup_logging(project_root=PROJECT_ROOT)
 
 import logging  # after setup_logging
+
 logger = logging.getLogger("wardrobe")
+
+API_V2_IMPORT_ERROR: Optional[str] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan contracts (critical path):
+    - Settings are reloaded (supports tests / env overrides).
+    - DB schema must be compatible with current API expectations.
+    Fail-fast if contract cannot be satisfied.
+    """
+    # Refresh settings in case env was changed before startup (tests rely on this)
+    settings.reload_settings()
+
+    from src.db_schema import ensure_schema
+
+    ensure_schema()
+
+    # Optional: ensure ontology init happens after settings are final
+    try:
+        from src import api_v2
+
+        api_v2.init_ontology()
+    except Exception:
+        # Non-fatal
+        logger.exception("Ontology init failed; continuing without ontology.", extra={"request_id": "-"})
+
+    yield
+
 
 # --- FastAPI app ---
 app = FastAPI(
     title="Wardrobe Control API",
     description="CRUD API + legacy dashboard (Flask) mounted on root.",
     version="2.0.0",
+    lifespan=lifespan,
 )
-
-API_V2_IMPORT_ERROR: Optional[str] = None
-
-
-@app.on_event("startup")
-def _startup_contracts() -> None:
-    """
-    Startup contracts (critical path):
-    - DB schema must be compatible with current API expectations.
-    Fail-fast if contract cannot be satisfied.
-    """
-    from src.db_schema import ensure_schema
-
-    ensure_schema()
 
 
 @app.middleware("http")
@@ -103,15 +123,6 @@ def _mount_api_v2() -> None:
                 app.include_router(router, prefix="/api/v2")
                 logger.info("Mounted api_v2 router with prefix=/api/v2", extra={"request_id": "-"})
 
-            # Optional init hook
-            init_fn = getattr(api_mod, "init_ontology", None)
-            if callable(init_fn):
-                try:
-                    init_fn()
-                except Exception:
-                    # Non-fatal
-                    logger.exception("Ontology init failed; continuing without ontology.", extra={"request_id": "-"})
-
             API_V2_IMPORT_ERROR = None
             return
 
@@ -127,14 +138,17 @@ def _mount_api_v2() -> None:
 _mount_api_v2()
 
 
-# --- Mount legacy Flask dashboard on root ---
-try:
-    from src.web_dashboard import flask_app  # noqa
+# --- Mount legacy Flask dashboard on root (optional) ---
+if getattr(settings, "MOUNT_FLASK", True):
+    try:
+        from src.web_dashboard import flask_app  # noqa
 
-    logger.info("Using a2wsgi.WSGIMiddleware for Flask mount", extra={"request_id": "-"})
-    app.mount("/", WSGIMiddleware(flask_app))
-except Exception:
-    logger.exception("Failed to mount Flask dashboard; API still available.", extra={"request_id": "-"})
+        logger.info("Using a2wsgi.WSGIMiddleware for Flask mount", extra={"request_id": "-"})
+        app.mount("/", WSGIMiddleware(flask_app))
+    except Exception:
+        logger.exception("Failed to mount Flask dashboard; API still available.", extra={"request_id": "-"})
+else:
+    logger.info("Flask mount disabled (WARDROBE_MOUNT_FLASK=0)", extra={"request_id": "-"})
 
 
 @app.exception_handler(Exception)
