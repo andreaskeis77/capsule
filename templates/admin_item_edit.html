@@ -20,6 +20,19 @@
 </head>
 
 <body>
+
+{% macro img_url(p) -%}
+  {%- if not p -%}
+  {%- else -%}
+    {%- set s = (p|string)|replace('\\','/') -%}
+    {%- if s.startswith('http') or s.startswith('/images/') -%}
+      {{- s -}}
+    {%- else -%}
+      /images/{{- s -}}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
   <div class="container py-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
       <div>
@@ -38,7 +51,7 @@
 
     <div class="cardx bg-white">
       {% if item.all_images and item.all_images|length > 0 %}
-        <img class="hero-img" src="/images/{{ item.all_images[0] }}" alt="{{ item.name|e }}">
+        <img class="hero-img" src="{{ img_url(item.all_images[0]) }}" alt="{{ item.name|e }}">
       {% else %}
         <div class="p-5 text-center muted">
           <i class="bi bi-image fs-1"></i>

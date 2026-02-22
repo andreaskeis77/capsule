@@ -22,6 +22,19 @@
 </head>
 
 <body>
+
+{% macro img_url(p) -%}
+  {%- if not p -%}
+  {%- else -%}
+    {%- set s = (p|string)|replace('\\','/') -%}
+    {%- if s.startswith('http') or s.startswith('/images/') -%}
+      {{- s -}}
+    {%- else -%}
+      /images/{{- s -}}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
   <div class="container py-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
       <div>
@@ -39,7 +52,7 @@
 
     <div class="cardx bg-white">
       {% if item.all_images and item.all_images|length > 0 %}
-        <img class="hero-img" src="/images/{{ item.all_images[0] }}" alt="{{ item.name|e }}">
+        <img class="hero-img" src="{{ img_url(item.all_images[0]) }}" alt="{{ item.name|e }}">
       {% else %}
         <div class="p-5 text-center muted">
           <i class="bi bi-image fs-1"></i>
@@ -65,8 +78,8 @@
             <div class="small muted mb-2">Weitere Bilder</div>
             <div class="d-flex flex-wrap gap-2">
               {% for img in item.all_images %}
-                <a href="/images/{{ img }}" target="_blank" class="text-decoration-none">
-                  <img src="/images/{{ img }}" alt="" style="width:120px;height:90px;object-fit:contain;background:#fff;border:1px solid #eee;border-radius:10px;">
+                <a href="{{ img_url(img) }}" target="_blank" class="text-decoration-none">
+                  <img src="{{ img_url(img) }}" alt="" style="width:120px;height:90px;object-fit:contain;background:#fff;border:1px solid #eee;border-radius:10px;">
                 </a>
               {% endfor %}
             </div>
