@@ -11,7 +11,14 @@ from typing import Dict, List, Optional, Tuple
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory
 
 from src import settings
+from src.db_schema import ensure_schema
 
+def _ensure_db_ready():
+    # Reload settings so env overrides (tests) are honored.
+    try:
+        settings.reload_settings()
+    except Exception:
+        pass
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("WardrobeAPI")
 
@@ -215,7 +222,7 @@ def index():
 
     conn = get_db_connection()
     rows_base = conn.execute(
-        "SELECT id, user_id, name, category, color_primary, color_variant, needs_review, image_path FROM items WHERE user_id = ? ORDER BY id DESC",
+        "SELECT id, user_id, name, category, color_primary, color_variant, needs_review, context, size, notes, image_path FROM items WHERE user_id = ? ORDER BY id DESC",
         (user,),
     ).fetchall()
 
@@ -378,21 +385,36 @@ def admin_delete_item(item_id: int):
 def api_get_inventory():
     _require_api_key()
     user = request.args.get("user", "karen")
-    conn = get_db_connection()
-    items = [
-        dict(row)
-        for row in conn.execute(
-            "SELECT id, name, category, color_primary FROM items WHERE user_id = ?",
-            (user,),
-        ).fetchall()
-    ]
-    conn.close()
+
+    # Be settings-aware for tests/env overrides
+    try:
+        settings.reload_settings()
+    except Exception:
+        pass
+
+    # Backward compatible inventory: older DBs may not have newer columns yet.
+    conn = sqlite3.connect(str(settings.DB_PATH))
+    conn.row_factory = sqlite3.Row
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(items)").fetchall()}
+        want = ["id", "name", "category", "color_primary", "color_variant", "needs_review", "context", "size", "notes", "image_path"]
+        select = []
+        for col in want:
+            if col in cols:
+                select.append(col)
+            else:
+                select.append(f"NULL AS {col}")
+        sql = "SELECT " + ", ".join(select) + " FROM items WHERE user_id = ?"
+        rows = conn.execute(sql, (user,)).fetchall()
+        items = [dict(row) for row in rows]
+    finally:
+        conn.close()
+
     return jsonify({"user": user, "items": items})
-
-
 @app.route("/api/v1/item/<int:item_id>", methods=["GET"])
 def api_get_item_detail(item_id: int):
     _require_api_key()
+    _ensure_db_ready()
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
     conn.close()
@@ -403,3 +425,7 @@ def api_get_item_detail(item_id: int):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=True, use_reloader=False)
+
+
+
+
