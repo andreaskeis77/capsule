@@ -15,7 +15,7 @@ logger = logging.getLogger("WardrobeDB")
 _ITEMS_REQUIRED_COLS: Set[str] = {"id", "user_id", "name"}
 
 # Columns that are safe to ADD if missing (SQLite supports ADD COLUMN easily).
-# Keep this aligned with what API v2 reads/writes + ingest metadata.
+# Keep this aligned with what API v2 reads/writes + ingest metadata + UI editable fields.
 _ITEMS_ADDABLE_COLUMNS: Dict[str, str] = {
     "brand": "brand TEXT",
     "category": "category TEXT",
@@ -29,7 +29,11 @@ _ITEMS_ADDABLE_COLUMNS: Dict[str, str] = {
     "vision_description": "vision_description TEXT",
     "image_path": "image_path TEXT",
     "created_at": "created_at TEXT DEFAULT CURRENT_TIMESTAMP",
-    # ingest idempotence + recovery (optional, internal)
+    # UI / planning fields
+    "context": "context TEXT",  # "private" | "executive" | NULL
+    "size": "size TEXT",
+    "notes": "notes TEXT",
+    # ingest idempotence + recovery (internal)
     "source_fingerprint": "source_fingerprint TEXT",
     "ingest_status": "ingest_status TEXT",
     "ingest_run_id": "ingest_run_id TEXT",
@@ -56,6 +60,10 @@ CREATE TABLE IF NOT EXISTS items (
 
     color_variant TEXT,
     needs_review INTEGER DEFAULT 0,
+
+    context TEXT,
+    size TEXT,
+    notes TEXT,
 
     source_fingerprint TEXT,
     ingest_status TEXT,
@@ -148,6 +156,7 @@ def ensure_schema(
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_items_user_id ON items(user_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_items_needs_review ON items(needs_review)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_items_ingest_status ON items(ingest_status)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_items_context ON items(context)")
                 # Idempotence: allow many NULLs, but non-NULL fingerprint should be unique per user
                 cur.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_items_user_fingerprint ON items(user_id, source_fingerprint)"

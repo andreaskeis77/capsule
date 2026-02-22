@@ -11,7 +11,6 @@ def _create_legacy_items_table(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
-    # Simulate a legacy schema (missing the newer columns)
     cur.execute(
         """
         CREATE TABLE items (
@@ -38,9 +37,7 @@ def test_ensure_schema_adds_missing_columns(tmp_path, monkeypatch):
     legacy_db = tmp_path / "legacy_wardrobe.db"
     _create_legacy_items_table(legacy_db)
 
-    # Save current env so we can restore within the test (avoid cross-test leakage)
     orig_db_env = os.environ.get("WARDROBE_DB_PATH")
-
     try:
         monkeypatch.setenv("WARDROBE_DB_PATH", str(legacy_db))
         settings.reload_settings()
@@ -53,8 +50,10 @@ def test_ensure_schema_adds_missing_columns(tmp_path, monkeypatch):
         assert "created_at" in cols
         assert "image_path" in cols
         assert "vision_description" in cols
+        assert "context" in cols
+        assert "size" in cols
+        assert "notes" in cols
     finally:
-        # Restore env + settings (important because settings is global module state)
         if orig_db_env is None:
             monkeypatch.delenv("WARDROBE_DB_PATH", raising=False)
         else:

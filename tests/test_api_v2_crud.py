@@ -72,15 +72,12 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("WARDROBE_IMAGE_JPEG_QUALITY", "85")
     monkeypatch.setenv("WARDROBE_STORE_ORIGINAL", "0")
 
-    # IMPORTANT: keep ontology off in CRUD tests
     monkeypatch.setenv("WARDROBE_ONTOLOGY_MODE", "off")
 
-    # Recompute settings module globals for this test env
     from src import settings as settings_module
 
     settings_module.reload_settings()
 
-    # Ensure ontology global reflects current settings
     from src import api_v2
 
     api_v2.init_ontology()
@@ -110,6 +107,9 @@ def test_create_update_delete(client):
         "name": "Blauer Blazer",
         "brand": "Boss",
         "category": "cat_test",
+        "context": "executive",
+        "size": "48",
+        "notes": "Initial note",
         "image_main_base64": b64,
         "image_ext": "jpg",
     }
@@ -119,12 +119,28 @@ def test_create_update_delete(client):
     assert created["id"] > 0
     assert created["image_path"].startswith("karen/")
     assert created["main_image_url"] is not None
+    assert created["context"] == "executive"
+    assert created["size"] == "48"
+    assert created["notes"] == "Initial note"
+
     item_id = created["id"]
 
     img_dir = Path(os.environ["WARDROBE_IMG_DIR"])
     folder_old = img_dir / Path(created["image_path"])
     assert folder_old.exists()
     assert (folder_old / "main.jpg").exists()
+
+    # Manual meta updates: context/notes + needs_review
+    r_meta = client.patch(
+        f"/api/v2/items/{item_id}",
+        json={"context": "private", "notes": "Updated note", "needs_review": 1},
+        headers={"X-API-Key": "testkey"},
+    )
+    assert r_meta.status_code == 200, r_meta.text
+    meta = r_meta.json()
+    assert meta["context"] == "private"
+    assert meta["notes"] == "Updated note"
+    assert meta["needs_review"] == 1
 
     # Rename triggers folder move
     r_name = client.patch(
@@ -137,30 +153,31 @@ def test_create_update_delete(client):
     assert renamed["name"] == "Roter Blazer"
     assert renamed["image_path"].startswith("karen/")
     assert renamed["image_path"] != created["image_path"]
+    assert renamed["context"] == "private"  # persisted
+    assert renamed["needs_review"] == 1
 
     folder_new = img_dir / Path(renamed["image_path"])
     assert folder_new.exists()
     assert (folder_new / "main.jpg").exists()
     assert not folder_old.exists()
 
-    # Metadata update should still work after rename
+    # Another metadata update
     r2 = client.patch(
         f"/api/v2/items/{item_id}",
-        json={"brand": "Adidas"},
+        json={"brand": "Adidas", "size": "50"},
         headers={"X-API-Key": "testkey"},
     )
     assert r2.status_code == 200, r2.text
     updated = r2.json()
     assert updated["brand"] == "Adidas"
+    assert updated["size"] == "50"
 
     r3 = client.delete(f"/api/v2/items/{item_id}", headers={"X-API-Key": "testkey"})
     assert r3.status_code == 200, r3.text
     assert r3.json()["deleted"] is True
 
-    # Folder should no longer exist in IMG_DIR (moved to trash + best-effort deleted)
     assert not folder_new.exists()
 
-    # DB row is gone
     conn = sqlite3.connect(os.environ["WARDROBE_DB_PATH"])
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -175,6 +192,7 @@ def test_validate_endpoint(client):
     payload = {
         "user_id": "karen",
         "name": "Validate Only",
+        "context": "executive",
         "image_main_base64": b64,
     }
     r = client.post("/api/v2/items/validate", json=payload, headers={"X-API-Key": "testkey"})
@@ -183,6 +201,7 @@ def test_validate_endpoint(client):
     assert data["ok"] is True
     assert data["normalized_image"]["stored_ext"] == "jpg"
     assert data["example_image_path"].startswith("karen/")
+    assert data["normalized_fields"]["context"] == "executive"
 
 
 def test_invalid_base64(client):
