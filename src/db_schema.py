@@ -5,22 +5,18 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from src import settings
 
 logger = logging.getLogger("WardrobeDB")
 
 # Canonical Items schema (minimal, evolvable, no ORM)
-# Notes:
-# - We only "ALTER TABLE ADD COLUMN" for non-critical/optional columns.
-# - If required columns are missing, we FAIL FAST (data integrity critical path).
 _ITEMS_REQUIRED_COLS: Set[str] = {"id", "user_id", "name"}
 
 # Columns that are safe to ADD if missing (SQLite supports ADD COLUMN easily).
 # Keep this aligned with what API v2 reads/writes.
 _ITEMS_ADDABLE_COLUMNS: Dict[str, str] = {
-    # core descriptive fields
     "brand": "brand TEXT",
     "category": "category TEXT",
     "color_primary": "color_primary TEXT",
@@ -32,7 +28,6 @@ _ITEMS_ADDABLE_COLUMNS: Dict[str, str] = {
     "price": "price TEXT",
     "vision_description": "vision_description TEXT",
     "image_path": "image_path TEXT",
-    # timestamps
     "created_at": "created_at TEXT DEFAULT CURRENT_TIMESTAMP",
 }
 
@@ -53,6 +48,33 @@ CREATE TABLE IF NOT EXISTS items (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     color_variant TEXT,
     needs_review INTEGER DEFAULT 0
+)
+""".strip()
+
+_CREATE_RUNS_SQL = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    component TEXT NOT NULL,
+    op TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_class TEXT,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    summary TEXT,
+    meta_json TEXT
+)
+""".strip()
+
+_CREATE_RUN_EVENTS_SQL = """
+CREATE TABLE IF NOT EXISTS run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    level TEXT NOT NULL,
+    event TEXT NOT NULL,
+    message TEXT,
+    data_json TEXT
 )
 """.strip()
 
@@ -86,7 +108,6 @@ def ensure_schema(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     changes: List[str] = []
-    last_exc: Optional[BaseException] = None
 
     for attempt in range(max(1, retries)):
         try:
@@ -95,64 +116,63 @@ def ensure_schema(
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
 
-                # Create table if missing
+                # --- items ---
                 if not _table_exists(cur, "items"):
                     cur.execute(_CREATE_ITEMS_SQL)
                     changes.append("create_table:items")
 
                 cols = _table_columns(cur, "items")
 
-                # Contract check: required columns must exist
                 missing_required = sorted(list(_ITEMS_REQUIRED_COLS - cols))
                 if missing_required:
                     raise RuntimeError(f"SchemaInvalid: items missing required columns: {missing_required}")
 
-                # Add missing optional columns
                 for col_name, col_sql in _ITEMS_ADDABLE_COLUMNS.items():
                     if col_name not in cols:
                         cur.execute(f"ALTER TABLE items ADD COLUMN {col_sql}")
                         changes.append(f"add_column:items.{col_name}")
 
-                # Indexes (idempotent)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_items_user_id ON items(user_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_items_needs_review ON items(needs_review)")
+
+                # --- run registry ---
+                if not _table_exists(cur, "runs"):
+                    cur.execute(_CREATE_RUNS_SQL)
+                    changes.append("create_table:runs")
+
+                if not _table_exists(cur, "run_events"):
+                    cur.execute(_CREATE_RUN_EVENTS_SQL)
+                    changes.append("create_table:run_events")
+
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_component_started ON runs(component, started_at)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_runs_status_started ON runs(status, started_at)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_run_events_run_ts ON run_events(run_id, ts)")
 
                 conn.commit()
             finally:
                 conn.close()
 
-            # Log once (startup typically)
             if changes:
                 logger.info(
-                    f"DB schema ensured db={path} changes={changes}",
-                    extra={"request_id": "-"},
+                    "DB schema ensured",
+                    extra={"request_id": "-", "event": "db.schema.ensure", "db": str(path), "changes": changes},
                 )
             else:
                 logger.info(
-                    f"DB schema already up to date db={path}",
-                    extra={"request_id": "-"},
+                    "DB schema up to date",
+                    extra={"request_id": "-", "event": "db.schema.ensure", "db": str(path), "changes": []},
                 )
             return changes
 
         except sqlite3.OperationalError as e:
-            # Transient class: db locked/busy => retry
-            last_exc = e
             msg = str(e).lower()
             if ("locked" in msg or "busy" in msg) and attempt < retries - 1:
                 time.sleep(base_delay_s * (2**attempt))
                 continue
             raise
 
-        except Exception as e:
-            # Permanent class: fail-fast
-            last_exc = e
-            logger.exception(
-                "DB schema ensure failed (fail-fast)",
-                extra={"request_id": "-"},
-            )
+        except Exception:
+            logger.exception("DB schema ensure failed (fail-fast)", extra={"request_id": "-", "event": "db.schema.failed"})
             raise
 
-    # Should never be reached, but keep contract explicit
-    if last_exc:
-        raise last_exc
-    return []
+    return changes
