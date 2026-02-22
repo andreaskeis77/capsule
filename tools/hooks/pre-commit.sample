@@ -1,0 +1,20 @@
+#!/bin/sh
+# tools/hooks/pre-commit.sample
+# Copy to .git/hooks/pre-commit and make executable.
+
+# Prefer venv python if present
+if [ -f ".venv/Scripts/python.exe" ]; then
+  PY=".venv/Scripts/python.exe"
+elif [ -f ".venv/bin/python" ]; then
+  PY=".venv/bin/python"
+else
+  PY="python"
+fi
+
+$PY tools/secret_scan.py --mode staged
+RC=$?
+if [ $RC -ne 0 ]; then
+  echo "Pre-commit secret scan failed."
+  exit $RC
+fi
+exit 0
