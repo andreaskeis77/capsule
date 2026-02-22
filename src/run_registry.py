@@ -2,16 +2,72 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, Generator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set
 
 from src import settings
 from src.db_schema import ensure_schema
+
+
+REDACT_PLACEHOLDER = "***REDACTED***"
+
+# key tokens are matched on a normalized key: non-alnum -> "_", lowercased.
+_SENSITIVE_KEY_TOKENS: Set[str] = {
+    "api_key",
+    "openai_api_key",
+    "authorization",
+    "bearer",
+    "bearer_token",
+    "access_token",
+    "refresh_token",
+    "token",
+    "secret",
+    "password",
+    "cookie",
+    "session",
+    "private_key",
+}
+
+
+def _norm_key(k: Any) -> str:
+    s = str(k)
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+
+
+def _is_sensitive_key(k: Any) -> bool:
+    nk = _norm_key(k)
+    return any(tok in nk for tok in _SENSITIVE_KEY_TOKENS)
+
+
+def _redact(obj: Any) -> Any:
+    """
+    Recursively redact secrets from dict/list structures based on key names.
+    - dict keys that look sensitive are replaced with REDACT_PLACEHOLDER
+    - nested structures are handled recursively
+    """
+    if obj is None:
+        return None
+
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            if _is_sensitive_key(k):
+                out[str(k)] = REDACT_PLACEHOLDER
+            else:
+                out[str(k)] = _redact(v)
+        return out
+
+    if isinstance(obj, (list, tuple)):
+        return [_redact(x) for x in obj]
+
+    # primitive types (str/int/bool/float) are safe unless attached to sensitive key above
+    return obj
 
 
 def _connect() -> sqlite3.Connection:
@@ -26,6 +82,10 @@ def _connect() -> sqlite3.Connection:
 
 
 def _safe_json(obj: Any) -> str:
+    """
+    JSON serializer used for meta_json/data_json. Applies secret redaction first.
+    """
+    obj = _redact(obj)
     try:
         return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
     except Exception:
@@ -36,7 +96,6 @@ def _parse_ts(s: Optional[str]) -> Optional[datetime]:
     if not s:
         return None
     try:
-        # SQLite CURRENT_TIMESTAMP => "YYYY-MM-DD HH:MM:SS"
         return datetime.fromisoformat(s)
     except Exception:
         return None
@@ -66,7 +125,7 @@ class RunHandle:
 
 
 def start_run(component: str, op: str, *, meta: Optional[Dict[str, Any]] = None) -> RunHandle:
-    ensure_schema()  # ensures run tables exist too
+    ensure_schema()
 
     run_id = str(uuid.uuid4())
     t0 = time.perf_counter()
@@ -139,7 +198,6 @@ def run_context(component: str, op: str, *, meta: Optional[Dict[str, Any]] = Non
         yield h
         h.ok()
     except sqlite3.OperationalError as e:
-        # classify DB lock/busy as transient
         msg = str(e).lower()
         if "locked" in msg or "busy" in msg:
             h.fail(error_class="transient", summary=f"{type(e).__name__}: {e}")
@@ -152,7 +210,7 @@ def run_context(component: str, op: str, *, meta: Optional[Dict[str, Any]] = Non
 
 
 # -------------------------
-# Read/query helpers (for KPI + reporting)
+# Read/query helpers
 # -------------------------
 
 def list_runs(
@@ -180,7 +238,6 @@ def list_runs(
         params.append(op)
 
     if since_hours is not None:
-        # compare as datetime strings; SQLite CURRENT_TIMESTAMP is compatible with this format
         dt = datetime.now() - timedelta(hours=since_hours)
         where.append("started_at >= ?")
         params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
@@ -203,7 +260,6 @@ def list_runs(
         out: List[Dict[str, Any]] = []
         for r in rows:
             d = dict(r)
-            # parse meta_json lazily (safe)
             try:
                 d["meta"] = json.loads(d.get("meta_json") or "{}")
             except Exception:
@@ -283,13 +339,9 @@ def compute_kpis(*, since_hours: Optional[int] = None, component: Optional[str] 
     def rate(x: int) -> Optional[float]:
         return (x / total) if total else None
 
-    # MTTR-Dev: for each failed run, find the next ok run that started after failure finished.
-    # (rough but useful baseline)
-    # Build time-ordered list ascending by started_at
     ordered = sorted(runs, key=lambda r: (r.get("started_at") or ""))
     mttr_minutes: List[float] = []
 
-    # Pre-extract ok run start times
     ok_starts: List[datetime] = []
     for r in ordered:
         if (r.get("status") or "").lower() == "ok":
@@ -313,9 +365,9 @@ def compute_kpis(*, since_hours: Optional[int] = None, component: Optional[str] 
     return {
         "total_runs": total,
         "counts": counts,
-        "RSR": rate(counts.get("ok", 0)),        # Run Success Rate
-        "PRR": rate(counts.get("partial", 0)),   # Partial Run Rate
-        "FRR": rate(counts.get("failed", 0)),    # Failure Rate
+        "RSR": rate(counts.get("ok", 0)),
+        "PRR": rate(counts.get("partial", 0)),
+        "FRR": rate(counts.get("failed", 0)),
         "MTTR_dev_minutes_avg": (sum(mttr_minutes) / len(mttr_minutes)) if mttr_minutes else None,
         "latest_success_started_at": latest_ok_at,
         "window_since_hours": since_hours,
