@@ -1,49 +1,101 @@
+# FILE: src/api_v2.py
 from __future__ import annotations
 
 import base64
 import io
 import logging
+import os
 import re
 import shutil
 import sqlite3
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from PIL import Image
 
 from src import settings
+from src.error_contract import error_class_for_status
 from src.ontology_runtime import OntologyManager, NormalizationResult
 
 logger = logging.getLogger("WardrobeControl")
 router = APIRouter(prefix="/api/v2")
 
 ONTOLOGY: Optional[OntologyManager] = None
+VALID_USERS = {"andreas", "karen"}
 
+
+# -------------------------
+# Helpers: request_id, errors, db classification
+# -------------------------
+
+def _request_id(request: Request) -> str:
+    return request.state.request_id if hasattr(request.state, "request_id") else "-"
+
+
+def _detail(status_code: int, request_id: str, error: str, **extra: Any) -> Dict[str, Any]:
+    d: Dict[str, Any] = {
+        "error": error,
+        "request_id": request_id,
+        "error_class": error_class_for_status(status_code),
+    }
+    d.update(extra)
+    return d
+
+
+def _raise(status_code: int, request_id: str, error: str, **extra: Any) -> None:
+    raise HTTPException(status_code=status_code, detail=_detail(status_code, request_id, error, **extra))
+
+
+def _is_db_locked(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return ("database is locked" in msg) or ("locked" in msg) or ("busy" in msg)
+
+
+def _handle_db_exc(exc: BaseException, rid: str, *, op: str, default_error: str) -> None:
+    if _is_db_locked(exc):
+        logger.warning(
+            "DB locked/busy",
+            extra={"request_id": rid, "event": "db.locked", "op": op},
+        )
+        _raise(503, rid, "DbLocked", stage="db", op=op)
+
+    logger.exception(
+        "DB error",
+        extra={"request_id": rid, "event": "db.error", "op": op},
+    )
+    _raise(500, rid, default_error, stage="db", op=op)
+
+
+def _require_valid_user(user_id: str, rid: str) -> None:
+    if user_id not in VALID_USERS:
+        _raise(400, rid, "InvalidUser", field="user_id", value=user_id)
+
+
+# -------------------------
+# Ontology init (signature tolerant)
+# -------------------------
 
 def init_ontology() -> None:
     """
     Load ontology in a signature-tolerant way.
-
-    We had multiple iterations of OntologyManager.load_from_files() in this project.
-    Some versions accept extra tuning kwargs (e.g. suggest_threshold), others accept none.
-    This function introspects the signature and only passes supported kwargs, so the
-    API can start even if ontology code changes.
+    Some versions accept extra tuning kwargs, others accept none.
     """
     global ONTOLOGY
 
     if settings.ONTOLOGY_MODE == "off":
         ONTOLOGY = None
-        logger.info("Ontology disabled (mode=off)", extra={"request_id": "-"})
+        logger.info("Ontology disabled (mode=off)", extra={"request_id": "-", "event": "ontology.off"})
         return
 
     try:
         import inspect
 
         sig = inspect.signature(OntologyManager.load_from_files)
-        kwargs = {}
+        kwargs: Dict[str, Any] = {}
 
         # Optional tuning knobs (only passed if supported by current signature)
         if "suggest_threshold" in sig.parameters:
@@ -66,6 +118,7 @@ def init_ontology() -> None:
             "Ontology loaded",
             extra={
                 "request_id": "-",
+                "event": "ontology.loaded",
                 "mode": settings.ONTOLOGY_MODE,
                 "allow_legacy": settings.ONTOLOGY_ALLOW_LEGACY,
                 "tolerant_fields": sorted(settings.ONTOLOGY_TOLERANT_FIELDS),
@@ -76,25 +129,29 @@ def init_ontology() -> None:
         # Do NOT fail server startup because ontology is a helper, not core CRUD.
         logger.warning(
             f"Ontology init failed; continuing without ontology. Error: {e}",
-            extra={"request_id": "-"},
+            extra={"request_id": "-", "event": "ontology.init_failed"},
             exc_info=True,
         )
 
 
-def _request_id(request: Request) -> str:
-    return request.state.request_id if hasattr(request.state, "request_id") else "-"
-
+# -------------------------
+# Auth / DB / misc helpers
+# -------------------------
 
 def require_api_key(
     request: Request,
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> None:
+    rid = _request_id(request)
+
     if settings.ALLOW_LOCAL_NOAUTH and request.client and request.client.host in {"127.0.0.1", "::1"}:
         return
+
     if not settings.API_KEY:
-        raise HTTPException(status_code=500, detail="Server misconfigured: missing WARDROBE_API_KEY")
+        _raise(500, rid, "ServerMisconfigured", stage="auth", reason="missing_api_key")
+
     if not x_api_key or x_api_key.strip() != settings.API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized: missing/invalid X-API-Key")
+        _raise(401, rid, "Unauthorized", stage="auth")
 
 
 def db_conn() -> sqlite3.Connection:
@@ -106,7 +163,17 @@ def db_conn() -> sqlite3.Connection:
 
 def _slugify(name: str) -> str:
     s = name.strip().lower()
-    s = s.replace("Ã¤", "ae").replace("Ã¶", "oe").replace("Ã¼", "ue").replace("ÃŸ", "ss")
+    # Handle both proper umlauts and mis-decoded variants
+    s = (
+        s.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+        .replace("Ã¤", "ae")
+        .replace("Ã¶", "oe")
+        .replace("Ã¼", "ue")
+        .replace("ÃŸ", "ss")
+    )
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     return s or "item"
 
@@ -116,10 +183,8 @@ def _safe_under(base: Path, target: Path) -> bool:
     try:
         base_r = base.resolve()
         targ_r = target.resolve()
-        # Python 3.9+: Path.is_relative_to exists
         if hasattr(targ_r, "is_relative_to"):
             return targ_r.is_relative_to(base_r)  # type: ignore[attr-defined]
-        # Fallback: relative_to raises ValueError if not under base
         targ_r.relative_to(base_r)
         return True
     except Exception:
@@ -150,9 +215,6 @@ def _normalize_image_to_jpg(raw: bytes) -> bytes:
 def _rmtree_robust(path: Path | str, ignore_errors: bool = False) -> None:
     """
     Robust directory delete for Windows.
-
-    On Windows it's common that a file handle is briefly held (virus scanner, preview, etc.).
-    We try a few times and, if needed, flip the readonly bit.
 
     ignore_errors:
       - False (default): raise after final attempt
@@ -189,7 +251,6 @@ def _rmtree_robust(path: Path | str, ignore_errors: bool = False) -> None:
         try:
             if not path.exists():
                 return
-            # We handle ignore_errors ourselves so we can keep the retry behavior.
             if has_onexc:
                 shutil.rmtree(path, onexc=_onexc)  # Python 3.12+: avoids DeprecationWarning
             else:
@@ -203,11 +264,11 @@ def _rmtree_robust(path: Path | str, ignore_errors: bool = False) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
-def _ontology_apply(
-    field: str,
-    value: Optional[str],
-    request_id: str,
-) -> Tuple[Optional[str], NormalizationResult]:
+# -------------------------
+# Ontology helpers
+# -------------------------
+
+def _ontology_apply(field: str, value: Optional[str], request_id: str) -> Tuple[Optional[str], NormalizationResult]:
     if ONTOLOGY is None:
         nr = NormalizationResult(
             field=field,
@@ -225,22 +286,23 @@ def _ontology_apply(
     # SOFT: tolerate some fields to avoid user spam
     if settings.ONTOLOGY_MODE == "soft" and canonical is None and field in settings.ONTOLOGY_TOLERANT_FIELDS:
         logger.info(
-            f"Ontology tolerant miss field={field} value={value}",
-            extra={"request_id": request_id},
+            "Ontology tolerant miss",
+            extra={"request_id": request_id, "event": "ontology.tolerant_miss", "field": field, "value": value},
         )
         return None, nr
 
     # Hard fail for non-tolerant fields
     if settings.ONTOLOGY_MODE in {"soft", "strict"} and canonical is None:
-        detail = {
-            "error": "OntologyValidationError",
-            "field": field,
-            "value": value,
-            "suggestions": [
+        detail = _detail(
+            400,
+            request_id,
+            "OntologyValidationError",
+            field=field,
+            value=value,
+            suggestions=[
                 {"canonical": s.canonical, "score": s.score, "label": s.label} for s in (nr.suggestions or [])
             ],
-            "request_id": request_id,
-        }
+        )
         raise HTTPException(status_code=400, detail=detail)
 
     return canonical, nr
@@ -251,12 +313,6 @@ def _derive_color_variant_and_review(
     canonical_color: Optional[str],
     explicit_variant: Optional[str],
 ) -> Tuple[Optional[str], int]:
-    """
-    Policy:
-    - If user provided explicit color_variant -> use it, needs_review depends on ontology mismatch
-    - Else if raw_color != canonical_color -> store raw as color_variant and needs_review=1
-    - Else -> no variant, needs_review=0
-    """
     raw = (raw_color or "").strip()
     canon = (canonical_color or "").strip()
 
@@ -270,6 +326,10 @@ def _derive_color_variant_and_review(
 
     return None, 0
 
+
+# -------------------------
+# Models
+# -------------------------
 
 class ItemCreateRequest(BaseModel):
     user_id: str = Field(..., description="andreas|karen")
@@ -359,6 +419,10 @@ class ReviewQueueResponse(BaseModel):
     items: List[ReviewItem]
 
 
+# -------------------------
+# Endpoints
+# -------------------------
+
 @router.get("/health", include_in_schema=False)
 def health():
     return {"status": "ok"}
@@ -393,22 +457,33 @@ def _row_to_item(row: sqlite3.Row, base_url: str) -> ItemResponse:
 
 
 @router.get("/items", response_model=ListItemsResponse, dependencies=[Depends(require_api_key)])
-def list_items(user: str) -> ListItemsResponse:
-    if user not in {"andreas", "karen"}:
-        raise HTTPException(status_code=400, detail="user must be andreas or karen")
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, name, category, color_primary, color_variant, needs_review
-        FROM items
-        WHERE user_id = ?
-        ORDER BY id DESC
-        """,
-        (user,),
-    )
-    rows = cur.fetchall()
-    conn.close()
+def list_items(request: Request, user: str) -> ListItemsResponse:
+    rid = _request_id(request)
+    if user not in VALID_USERS:
+        _raise(400, rid, "InvalidUser", field="user", value=user)
+
+    try:
+        conn = db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, category, color_primary, color_variant, needs_review
+            FROM items
+            WHERE user_id = ?
+            ORDER BY id DESC
+            """,
+            (user,),
+        )
+        rows = cur.fetchall()
+    except Exception as e:
+        _handle_db_exc(e, rid, op="items.list", default_error="ListFailed")
+        raise
+    finally:
+        try:
+            conn.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+
     items = [
         ItemSummary(
             id=r["id"],
@@ -431,36 +506,49 @@ def review_queue(
     offset: int = Query(0, ge=0),
 ) -> ReviewQueueResponse:
     rid = _request_id(request)
-    if user not in {"andreas", "karen"}:
-        raise HTTPException(status_code=400, detail={"error": "InvalidUser", "request_id": rid})
+    if user not in VALID_USERS:
+        _raise(400, rid, "InvalidUser", field="user", value=user)
 
-    conn = db_conn()
-    cur = conn.cursor()
+    try:
+        conn = db_conn()
+        cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*) AS cnt FROM items WHERE user_id = ? AND needs_review = 1", (user,))
-    total = int(cur.fetchone()["cnt"])
+        cur.execute("SELECT COUNT(*) AS cnt FROM items WHERE user_id = ? AND needs_review = 1", (user,))
+        total = int(cur.fetchone()["cnt"])
 
-    cur.execute(
-        """
-        SELECT id, name, category, color_primary, color_variant, needs_review
-        FROM items
-        WHERE user_id = ? AND needs_review = 1
-        ORDER BY id DESC
-        LIMIT ? OFFSET ?
-        """,
-        (user, limit, offset),
-    )
-    rows = cur.fetchall()
-    conn.close()
+        cur.execute(
+            """
+            SELECT id, name, category, color_primary, color_variant, needs_review
+            FROM items
+            WHERE user_id = ? AND needs_review = 1
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (user, limit, offset),
+        )
+        rows = cur.fetchall()
+    except Exception as e:
+        _handle_db_exc(e, rid, op="items.review_queue", default_error="ReviewQueueFailed")
+        raise
+    finally:
+        try:
+            conn.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
 
     items: List[ReviewItem] = []
     for r in rows:
         variant = r["color_variant"]
         suggestions: List[str] = []
-        # Use ontology suggestions if available
         if ONTOLOGY is not None and variant:
-            nr = ONTOLOGY.normalize_field("color_primary", variant)
-            suggestions = [s.canonical for s in (nr.suggestions or [])]
+            try:
+                nr = ONTOLOGY.normalize_field("color_primary", variant)
+                suggestions = [s.canonical for s in (nr.suggestions or [])]
+            except Exception:
+                logger.exception(
+                    "Ontology suggestion failed",
+                    extra={"request_id": rid, "event": "ontology.suggest_failed", "value": variant},
+                )
         items.append(
             ReviewItem(
                 id=r["id"],
@@ -479,13 +567,22 @@ def review_queue(
 @router.get("/items/{item_id}", response_model=ItemResponse, dependencies=[Depends(require_api_key)])
 def get_item(request: Request, item_id: int) -> ItemResponse:
     rid = _request_id(request)
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-    row = cur.fetchone()
-    conn.close()
+    try:
+        conn = db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+        row = cur.fetchone()
+    except Exception as e:
+        _handle_db_exc(e, rid, op="items.get", default_error="GetFailed")
+        raise
+    finally:
+        try:
+            conn.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+
     if not row:
-        raise HTTPException(status_code=404, detail={"error": "NotFound", "request_id": rid})
+        _raise(404, rid, "NotFound", item_id=item_id)
 
     base_url = str(request.base_url).rstrip("/")
     return _row_to_item(row, base_url)
@@ -494,9 +591,10 @@ def get_item(request: Request, item_id: int) -> ItemResponse:
 @router.post("/items", response_model=ItemResponse, dependencies=[Depends(require_api_key)])
 def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
     rid = _request_id(request)
+    _require_valid_user(payload.user_id, rid)
 
     raw_color = payload.color_primary
-    canonical_color, nr_color = _ontology_apply("color_primary", raw_color, rid)
+    canonical_color, _ = _ontology_apply("color_primary", raw_color, rid)
     derived_variant, derived_review = _derive_color_variant_and_review(raw_color, canonical_color, payload.color_variant)
 
     canonical_category = None
@@ -516,33 +614,36 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         canonical_collar, _ = _ontology_apply("collar", payload.collar, rid)
 
     logger.info(
-        f"Create normalization color_primary={canonical_color} variant={derived_variant} needs_review={derived_review}",
-        extra={"request_id": rid},
+        "Create normalization",
+        extra={
+            "request_id": rid,
+            "event": "item.create.normalize",
+            "color_primary": canonical_color,
+            "color_variant": derived_variant,
+            "needs_review": derived_review,
+        },
     )
 
     # Image decode/normalize: never let PIL/base64 errors bubble as 500.
     try:
         raw_bytes = _decode_image_base64(payload.image_main_base64)
     except Exception:
-        logger.exception("Image base64 decode failed", extra={"request_id": rid})
-        raise HTTPException(status_code=400, detail={"error": "ImageDecodeFailed", "stage": "base64", "request_id": rid})
+        logger.exception("Image base64 decode failed", extra={"request_id": rid, "event": "item.create.image_decode"})
+        _raise(400, rid, "ImageDecodeFailed", stage="base64")
 
     if len(raw_bytes) > settings.MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail={"error": "ImageTooLarge", "request_id": rid})
+        _raise(413, rid, "ImageTooLarge", stage="image", max_bytes=settings.MAX_IMAGE_BYTES)
 
     try:
         jpg_bytes = _normalize_image_to_jpg(raw_bytes)
     except Exception:
-        logger.exception("Image normalize failed", extra={"request_id": rid})
-        raise HTTPException(status_code=400, detail={"error": "ImageDecodeFailed", "stage": "image", "request_id": rid})
-
-    if payload.user_id not in {"andreas", "karen"}:
-        raise HTTPException(status_code=400, detail={"error": "InvalidUser", "request_id": rid})
+        logger.exception("Image normalize failed", extra={"request_id": rid, "event": "item.create.image_normalize"})
+        _raise(400, rid, "ImageDecodeFailed", stage="image")
 
     conn = db_conn()
     cur = conn.cursor()
 
-    item_id = None
+    item_id: Optional[int] = None
     abs_dir: Optional[Path] = None
 
     try:
@@ -571,7 +672,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
                 payload.vision_description,
             ),
         )
-        item_id = cur.lastrowid
+        item_id = int(cur.lastrowid)
 
         slug = _slugify(payload.name)
         rel_dir = Path(payload.user_id) / f"{slug}_{item_id}"
@@ -584,30 +685,56 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         cur.execute("UPDATE items SET image_path = ? WHERE id = ?", (str(rel_dir).replace("\\", "/"), item_id))
         conn.commit()
 
-    except Exception:
+        logger.info(
+            "Create OK",
+            extra={
+                "request_id": rid,
+                "event": "item.create.ok",
+                "item_id": item_id,
+                "image_path": str(rel_dir).replace("\\", "/"),
+            },
+        )
+
+    except Exception as e:
         conn.rollback()
+
+        # best-effort cleanup: DB row + filesystem
         try:
             if item_id is not None:
                 cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
                 conn.commit()
         except Exception:
             pass
+
         try:
             if abs_dir is not None and abs_dir.exists():
                 _rmtree_robust(abs_dir, ignore_errors=True)
         except Exception:
-            pass
-        logger.exception("Create failed", extra={"request_id": rid})
-        raise HTTPException(status_code=500, detail={"error": "CreateFailed", "request_id": rid})
+            logger.exception("Create cleanup failed", extra={"request_id": rid, "event": "item.create.cleanup"})
+
+        if _is_db_locked(e):
+            logger.warning("Create failed: DB locked", extra={"request_id": rid, "event": "item.create.db_locked"})
+            _raise(503, rid, "DbLocked", stage="db", op="items.create")
+
+        logger.exception("Create failed", extra={"request_id": rid, "event": "item.create.failed"})
+        _raise(500, rid, "CreateFailed", stage="db", op="items.create")
 
     finally:
         conn.close()
 
-    conn2 = db_conn()
-    cur2 = conn2.cursor()
-    cur2.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-    row = cur2.fetchone()
-    conn2.close()
+    # Fetch created row
+    try:
+        conn2 = db_conn()
+        cur2 = conn2.cursor()
+        cur2.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+        row = cur2.fetchone()
+        conn2.close()
+    except Exception as e:
+        _handle_db_exc(e, rid, op="items.create.fetch", default_error="CreateFailed")
+        raise
+
+    if not row:
+        _raise(500, rid, "CreateFailed", stage="db", reason="missing_row_after_create")
 
     base_url = str(request.base_url).rstrip("/")
     return _row_to_item(row, base_url)
@@ -615,11 +742,11 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
 
 @router.post("/items/validate", dependencies=[Depends(require_api_key)])
 def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any]:
-    """Dry-run: validate/normalize fields and image without writing DB or filesystem."""
     rid = _request_id(request)
+    _require_valid_user(payload.user_id, rid)
 
     raw_color = payload.color_primary
-    canonical_color, _nr_color = _ontology_apply("color_primary", raw_color, rid)
+    canonical_color, _ = _ontology_apply("color_primary", raw_color, rid)
     derived_variant, derived_review = _derive_color_variant_and_review(raw_color, canonical_color, payload.color_variant)
 
     canonical_category = None
@@ -638,21 +765,20 @@ def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any
     if payload.collar:
         canonical_collar, _ = _ontology_apply("collar", payload.collar, rid)
 
-    # Image decode/normalize: never let PIL/base64 errors bubble as 500.
     try:
         raw_bytes = _decode_image_base64(payload.image_main_base64)
     except Exception:
-        logger.exception("Validate image base64 decode failed", extra={"request_id": rid})
-        raise HTTPException(status_code=400, detail={"error": "ImageDecodeFailed", "stage": "base64", "request_id": rid})
+        logger.exception("Validate image base64 decode failed", extra={"request_id": rid, "event": "item.validate.image_decode"})
+        _raise(400, rid, "ImageDecodeFailed", stage="base64")
 
     if len(raw_bytes) > settings.MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=413, detail={"error": "ImageTooLarge", "request_id": rid})
+        _raise(413, rid, "ImageTooLarge", stage="image", max_bytes=settings.MAX_IMAGE_BYTES)
 
     try:
         jpg_bytes = _normalize_image_to_jpg(raw_bytes)
     except Exception:
-        logger.exception("Validate image normalize failed", extra={"request_id": rid})
-        raise HTTPException(status_code=400, detail={"error": "ImageDecodeFailed", "stage": "image", "request_id": rid})
+        logger.exception("Validate image normalize failed", extra={"request_id": rid, "event": "item.validate.image_normalize"})
+        _raise(400, rid, "ImageDecodeFailed", stage="image")
 
     width = None
     height = None
@@ -660,7 +786,6 @@ def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any
         with Image.open(io.BytesIO(jpg_bytes)) as im2:
             width, height = im2.size
     except Exception:
-        # Non-fatal for validate output
         pass
 
     slug = _slugify(payload.name)
@@ -700,16 +825,22 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
 
     conn = db_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-    existing = cur.fetchone()
+    try:
+        cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+        existing = cur.fetchone()
+    except Exception as e:
+        conn.close()
+        _handle_db_exc(e, rid, op="items.update.load", default_error="UpdateFailed")
+        raise
+
     if not existing:
         conn.close()
-        raise HTTPException(status_code=404, detail={"error": "NotFound", "request_id": rid})
+        _raise(404, rid, "NotFound", item_id=item_id)
 
     updates: Dict[str, Any] = payload.model_dump(exclude_unset=True)
     if not updates:
         conn.close()
-        raise HTTPException(status_code=400, detail={"error": "NoFields", "request_id": rid})
+        _raise(400, rid, "NoFields")
 
     # --- Color logic (normalize + derive review/variant) ---
     if "color_primary" in updates:
@@ -722,8 +853,15 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
             updates["color_variant"] = derived_variant
         updates["needs_review"] = derived_review
         logger.info(
-            f"Update color item_id={item_id} color_primary={canonical_color} variant={updates.get('color_variant')} needs_review={derived_review}",
-            extra={"request_id": rid},
+            "Update color",
+            extra={
+                "request_id": rid,
+                "event": "item.update.color",
+                "item_id": item_id,
+                "color_primary": canonical_color,
+                "color_variant": updates.get("color_variant"),
+                "needs_review": derived_review,
+            },
         )
 
     # --- Other ontology fields (hard fail) ---
@@ -749,6 +887,10 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
 
         new_user = updates.get("user_id", old_user)
         new_name = updates.get("name", old_name)
+        if new_user not in VALID_USERS:
+            conn.close()
+            _raise(400, rid, "InvalidUser", field="user_id", value=new_user)
+
         new_slug = _slugify(new_name)
         new_rel = str(Path(new_user) / f"{new_slug}_{old_id}").replace("\\", "/")
 
@@ -763,33 +905,42 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
                 if src_dir.resolve() != dst_dir.resolve():
                     if dst_dir.exists():
                         logger.warning(
-                            f"Folder move skipped (destination exists) src={old_rel} dst={new_rel}",
-                            extra={"request_id": rid},
+                            "Folder move skipped (destination exists)",
+                            extra={"request_id": rid, "event": "item.update.move_skipped", "src": old_rel, "dst": new_rel},
                         )
                     else:
                         try:
-                            # prefer atomic rename (same volume)
                             src_dir.rename(dst_dir)
                         except Exception:
-                            # fallback (may copy+delete)
                             shutil.move(str(src_dir), str(dst_dir))
                         moved = True
                         moved_src = src_dir
                         moved_dst = dst_dir
                         updates["image_path"] = new_rel
-                        logger.info(f"Moved image folder {old_rel} -> {new_rel}", extra={"request_id": rid})
+                        logger.info(
+                            "Moved image folder",
+                            extra={"request_id": rid, "event": "item.update.move_ok", "src": old_rel, "dst": new_rel, "item_id": item_id},
+                        )
         except Exception:
-            # Do NOT fail the whole metadata update if rename fails.
-            logger.exception("Folder move failed (continuing metadata update)", extra={"request_id": rid})
+            logger.exception("Folder move failed (continuing metadata update)", extra={"request_id": rid, "event": "item.update.move_failed", "item_id": item_id})
             updates.pop("image_path", None)
             moved = False
             moved_src = None
             moved_dst = None
 
     allowed = {
-        "user_id", "name", "brand", "category",
-        "color_primary", "color_variant", "needs_review",
-        "material_main", "fit", "collar", "price", "vision_description",
+        "user_id",
+        "name",
+        "brand",
+        "category",
+        "color_primary",
+        "color_variant",
+        "needs_review",
+        "material_main",
+        "fit",
+        "collar",
+        "price",
+        "vision_description",
         "image_path",
     }
 
@@ -802,7 +953,7 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
 
     if not set_cols:
         conn.close()
-        raise HTTPException(status_code=400, detail={"error": "NoValidFields", "request_id": rid})
+        _raise(400, rid, "NoValidFields")
 
     params.append(item_id)
     sql = f"UPDATE items SET {', '.join(set_cols)} WHERE id = ?"
@@ -810,7 +961,8 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
     try:
         cur.execute(sql, params)
         conn.commit()
-    except Exception:
+        logger.info("Update OK", extra={"request_id": rid, "event": "item.update.ok", "item_id": item_id})
+    except Exception as e:
         conn.rollback()
 
         # If we moved the folder but DB update failed, roll the move back to keep consistency.
@@ -822,24 +974,34 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
                         moved_dst.rename(moved_src)
                     except Exception:
                         shutil.move(str(moved_dst), str(moved_src))
-                logger.warning("Rolled back folder move after DB failure", extra={"request_id": rid})
+                logger.warning("Rolled back folder move after DB failure", extra={"request_id": rid, "event": "item.update.move_rollback", "item_id": item_id})
             except Exception:
-                # Worst case: folder moved but DB not updated -> log hard; we still return 500.
-                logger.exception("Rollback of folder move failed", extra={"request_id": rid})
+                logger.exception("Rollback of folder move failed", extra={"request_id": rid, "event": "item.update.move_rollback_failed", "item_id": item_id})
 
-        logger.exception("Update failed", extra={"request_id": rid})
-        raise HTTPException(status_code=500, detail={"error": "UpdateFailed", "request_id": rid})
+        if _is_db_locked(e):
+            _raise(503, rid, "DbLocked", stage="db", op="items.update")
+
+        logger.exception("Update failed", extra={"request_id": rid, "event": "item.update.failed", "item_id": item_id})
+        _raise(500, rid, "UpdateFailed", stage="db", op="items.update")
     finally:
         conn.close()
 
-    conn2 = db_conn()
-    cur2 = conn2.cursor()
-    cur2.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-    row = cur2.fetchone()
-    conn2.close()
+    try:
+        conn2 = db_conn()
+        cur2 = conn2.cursor()
+        cur2.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+        row = cur2.fetchone()
+        conn2.close()
+    except Exception as e:
+        _handle_db_exc(e, rid, op="items.update.fetch", default_error="UpdateFailed")
+        raise
+
+    if not row:
+        _raise(500, rid, "UpdateFailed", stage="db", reason="missing_row_after_update")
 
     base_url = str(request.base_url).rstrip("/")
     return _row_to_item(row, base_url)
+
 
 @router.delete("/items/{item_id}", response_model=DeleteResponse, dependencies=[Depends(require_api_key)])
 def delete_item(request: Request, item_id: int) -> DeleteResponse:
@@ -847,33 +1009,35 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
 
     conn = db_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, image_path FROM items WHERE id = ?", (item_id,))
-    row = cur.fetchone()
+    try:
+        cur.execute("SELECT id, image_path FROM items WHERE id = ?", (item_id,))
+        row = cur.fetchone()
+    except Exception as e:
+        conn.close()
+        _handle_db_exc(e, rid, op="items.delete.load", default_error="DeleteFailed")
+        raise
+
     if not row:
         conn.close()
-        raise HTTPException(status_code=404, detail={"error": "NotFound", "request_id": rid})
+        _raise(404, rid, "NotFound", item_id=item_id)
 
     image_path = (row["image_path"] or "").strip()
     src_dir: Optional[Path] = (settings.IMG_DIR / Path(image_path)) if image_path else None
     trashed_dir: Optional[Path] = None
 
     try:
-        # 1) If images exist: move them to TRASH first (reversible) so a DB failure
-        #    does not leave the DB pointing to a missing folder.
+        # 1) Move images to TRASH first (reversible) so DB failures do not leave DB pointing to missing folder.
         if src_dir and src_dir.exists():
             if not _safe_under(settings.IMG_DIR, src_dir):
-                raise HTTPException(status_code=400, detail={"error": "JailCheckFailed", "request_id": rid})
+                _raise(400, rid, "JailCheckFailed", stage="fs", op="items.delete")
 
             rel = Path(image_path)
-
-            # Guard against absolute paths / traversal
             if rel.is_absolute() or ".." in rel.parts:
-                raise HTTPException(status_code=400, detail={"error": "JailCheckFailed", "request_id": rid})
+                _raise(400, rid, "JailCheckFailed", stage="fs", op="items.delete")
 
             base_trash = settings.TRASH_DIR
             base_trash.mkdir(parents=True, exist_ok=True)
 
-            # Keep sub-structure but ensure uniqueness
             candidate = base_trash / rel
             if candidate.exists():
                 candidate = base_trash / rel.parent / f"{rel.name}__deleted__{item_id}__{rid[:8]}"
@@ -881,15 +1045,19 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
             candidate.parent.mkdir(parents=True, exist_ok=True)
 
             if not _safe_under(base_trash, candidate):
-                raise HTTPException(status_code=400, detail={"error": "JailCheckFailed", "request_id": rid})
+                _raise(400, rid, "JailCheckFailed", stage="fs", op="items.delete")
 
-            # Atomic move within same volume
             src_dir.rename(candidate)
             trashed_dir = candidate
 
         # 2) Delete DB row (authoritative)
         cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
         conn.commit()
+
+        logger.info(
+            "Delete OK",
+            extra={"request_id": rid, "event": "item.delete.ok", "item_id": item_id, "image_path": image_path},
+        )
 
     except HTTPException:
         # Attempt to restore folder if we already moved it
@@ -898,9 +1066,9 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
                 src_dir.parent.mkdir(parents=True, exist_ok=True)
                 trashed_dir.rename(src_dir)
             except Exception:
-                logger.exception("Rollback move failed after HTTPException", extra={"request_id": rid})
+                logger.exception("Rollback move failed after HTTPException", extra={"request_id": rid, "event": "item.delete.rollback_failed"})
         raise
-    except Exception:
+    except Exception as e:
         conn.rollback()
         # If DB delete failed, move folder back to original location
         if trashed_dir and src_dir and trashed_dir.exists():
@@ -908,9 +1076,13 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
                 src_dir.parent.mkdir(parents=True, exist_ok=True)
                 trashed_dir.rename(src_dir)
             except Exception:
-                logger.exception("Rollback move failed after DeleteFailed", extra={"request_id": rid})
-        logger.exception("Delete failed", extra={"request_id": rid})
-        raise HTTPException(status_code=500, detail={"error": "DeleteFailed", "request_id": rid})
+                logger.exception("Rollback move failed after DeleteFailed", extra={"request_id": rid, "event": "item.delete.rollback_failed"})
+
+        if _is_db_locked(e):
+            _raise(503, rid, "DbLocked", stage="db", op="items.delete")
+
+        logger.exception("Delete failed", extra={"request_id": rid, "event": "item.delete.failed", "item_id": item_id})
+        _raise(500, rid, "DeleteFailed", stage="db", op="items.delete")
     finally:
         conn.close()
 
@@ -919,6 +1091,6 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
         try:
             _rmtree_robust(trashed_dir, ignore_errors=True)
         except Exception:
-            logger.exception("Trash cleanup failed (best effort)", extra={"request_id": rid})
+            logger.exception("Trash cleanup failed (best effort)", extra={"request_id": rid, "event": "item.delete.trash_cleanup_failed"})
 
     return DeleteResponse(deleted=True, id=item_id, image_path=image_path)
