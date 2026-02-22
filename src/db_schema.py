@@ -15,7 +15,7 @@ logger = logging.getLogger("WardrobeDB")
 _ITEMS_REQUIRED_COLS: Set[str] = {"id", "user_id", "name"}
 
 # Columns that are safe to ADD if missing (SQLite supports ADD COLUMN easily).
-# Keep this aligned with what API v2 reads/writes.
+# Keep this aligned with what API v2 reads/writes + ingest metadata.
 _ITEMS_ADDABLE_COLUMNS: Dict[str, str] = {
     "brand": "brand TEXT",
     "category": "category TEXT",
@@ -29,6 +29,11 @@ _ITEMS_ADDABLE_COLUMNS: Dict[str, str] = {
     "vision_description": "vision_description TEXT",
     "image_path": "image_path TEXT",
     "created_at": "created_at TEXT DEFAULT CURRENT_TIMESTAMP",
+    # ingest idempotence + recovery (optional, internal)
+    "source_fingerprint": "source_fingerprint TEXT",
+    "ingest_status": "ingest_status TEXT",
+    "ingest_run_id": "ingest_run_id TEXT",
+    "ingest_error": "ingest_error TEXT",
 }
 
 _CREATE_ITEMS_SQL = """
@@ -36,6 +41,7 @@ CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
+
     brand TEXT,
     category TEXT,
     color_primary TEXT,
@@ -44,10 +50,17 @@ CREATE TABLE IF NOT EXISTS items (
     collar TEXT,
     price TEXT,
     vision_description TEXT,
+
     image_path TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
     color_variant TEXT,
-    needs_review INTEGER DEFAULT 0
+    needs_review INTEGER DEFAULT 0,
+
+    source_fingerprint TEXT,
+    ingest_status TEXT,
+    ingest_run_id TEXT,
+    ingest_error TEXT
 )
 """.strip()
 
@@ -134,6 +147,11 @@ def ensure_schema(
 
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_items_user_id ON items(user_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_items_needs_review ON items(needs_review)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_items_ingest_status ON items(ingest_status)")
+                # Idempotence: allow many NULLs, but non-NULL fingerprint should be unique per user
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_items_user_fingerprint ON items(user_id, source_fingerprint)"
+                )
 
                 # --- run registry ---
                 if not _table_exists(cur, "runs"):
@@ -152,16 +170,10 @@ def ensure_schema(
             finally:
                 conn.close()
 
-            if changes:
-                logger.info(
-                    "DB schema ensured",
-                    extra={"request_id": "-", "event": "db.schema.ensure", "db": str(path), "changes": changes},
-                )
-            else:
-                logger.info(
-                    "DB schema up to date",
-                    extra={"request_id": "-", "event": "db.schema.ensure", "db": str(path), "changes": []},
-                )
+            logger.info(
+                "DB schema ensured",
+                extra={"request_id": "-", "event": "db.schema.ensure", "db": str(path), "changes": changes},
+            )
             return changes
 
         except sqlite3.OperationalError as e:

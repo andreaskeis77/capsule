@@ -14,6 +14,7 @@ if _repo_root_str not in sys.path:
 import argparse
 import base64
 import gc
+import hashlib
 import json
 import logging
 import os
@@ -21,13 +22,12 @@ import shutil
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from src import settings
 from src.db_schema import ensure_schema
 from src.run_registry import start_run
 
-# --- Logging (CLI-friendly) ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -47,6 +47,7 @@ class Stats:
     ok: int = 0
     failed: int = 0
     skipped: int = 0
+    quarantined: int = 0
 
 
 def _now_s() -> float:
@@ -72,16 +73,35 @@ def _list_image_files(item_dir: Path) -> List[Path]:
     return imgs
 
 
+def _folder_signature_fingerprint(item_dir: Path) -> str:
+    """
+    Folder signature fingerprint (fast):
+      - uses relative paths + file sizes (NOT contents)
+      - stable across moves/renames of the outer folder
+    """
+    entries: List[Dict[str, Any]] = []
+    for p in sorted(item_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        try:
+            rel = p.relative_to(item_dir).as_posix()
+        except Exception:
+            rel = p.name
+        try:
+            size = p.stat().st_size
+        except Exception:
+            size = None
+        entries.append({"rel": rel, "size": size})
+
+    blob = json.dumps(entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _encode_bytes(b: bytes) -> str:
     return base64.b64encode(b).decode("ascii")
 
 
 def _image_to_data_url(path: Path) -> Optional[Dict[str, Any]]:
-    """
-    Convert file to OpenAI-compatible image_url payload.
-    We prefer native bytes for jpg/png/webp. For others, try Pillow convert to JPG.
-    Returns dict payload or None (if cannot load).
-    """
     ext = path.suffix.lower().lstrip(".")
     if ext == "jfif":
         ext = "jpeg"
@@ -94,13 +114,10 @@ def _image_to_data_url(path: Path) -> Optional[Dict[str, Any]]:
             raw = path.read_bytes()
             mime = ext
         else:
-            # best-effort convert via Pillow
             from PIL import Image  # lazy import
 
             with Image.open(path) as img:
                 img = img.convert("RGB")
-                out = Path(path).with_suffix(".jpg")
-                # write to memory only
                 import io
 
                 buf = io.BytesIO()
@@ -120,25 +137,14 @@ def _image_to_data_url(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def _get_openai_client():
-    """
-    Lazy import so tests/dry-run don't require OpenAI client availability.
-    """
     try:
         from openai import OpenAI  # type: ignore
     except Exception as e:
         raise RuntimeError(f"OpenAI SDK not available: {e}") from e
-
-    # OpenAI() reads OPENAI_API_KEY from env by default
     return OpenAI()
 
 
 def analyze_item_hybrid(image_paths: List[Path], text_context: str, *, model: str, max_images: int) -> Optional[Dict[str, Any]]:
-    """
-    Calls OpenAI vision+text (or text only) and returns parsed JSON dict.
-    """
-    mode = "VISION+TEXT" if image_paths else "ONLY-TEXT"
-    logger.info("      -> AI mode: %s (%d images, %d text chars)", mode, len(image_paths), len(text_context))
-
     prompt = (
         "Analysiere dieses Kleidungsstück.\n"
         f"TEXT-DATEN: '{text_context}'\n"
@@ -153,8 +159,6 @@ def analyze_item_hybrid(image_paths: List[Path], text_context: str, *, model: st
     )
 
     content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-
-    # Attach up to N images (best-effort)
     attached = 0
     for p in image_paths:
         if attached >= max_images:
@@ -175,20 +179,122 @@ def analyze_item_hybrid(image_paths: List[Path], text_context: str, *, model: st
         txt = resp.choices[0].message.content
         return json.loads(txt)
     except Exception as e:
-        logger.error("      [!] OpenAI error: %s", e)
+        logger.error("[OpenAI] error: %s", e)
         return None
 
 
-def _db_has_image_path(conn: sqlite3.Connection, user: str, image_path: str) -> bool:
+def _fake_ai(item_name: str, text_context: str) -> Dict[str, Any]:
+    # deterministic, test-friendly fallback
+    return {
+        "name": item_name,
+        "brand": None,
+        "category": "cat_test",
+        "color_primary": None,
+        "material_main": None,
+        "fit": None,
+        "collar": None,
+        "price": None,
+        "vision_description": f"FAKE_AI: {text_context[:200]}".strip(),
+    }
+
+
+def _connect_ro() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _db_get_by_fingerprint(conn: sqlite3.Connection, user: str, fp: str):
     cur = conn.cursor()
-    cur.execute("SELECT id FROM items WHERE user_id = ? AND image_path = ? LIMIT 1", (user, image_path))
-    return cur.fetchone() is not None
+    cur.execute(
+        "SELECT id, ingest_status, image_path FROM items WHERE user_id = ? AND source_fingerprint = ? LIMIT 1",
+        (user, fp),
+    )
+    return cur.fetchone()
+
+
+def _db_claim_pending(conn: sqlite3.Connection, *, user: str, item_name: str, image_path: str, fp: str, run_id: str) -> int:
+    """
+    Claim or reuse an item-row for this fingerprint.
+    Ensures there is a DB record even if we crash mid-ingest.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO items (user_id, name, image_path, source_fingerprint, ingest_status, ingest_run_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user, item_name, image_path, fp, "pending", run_id),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    except sqlite3.IntegrityError:
+        # already exists -> reuse
+        conn.rollback()
+        cur.execute(
+            "SELECT id FROM items WHERE user_id = ? AND source_fingerprint = ? LIMIT 1",
+            (user, fp),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise
+        # set back to pending for retry
+        cur.execute(
+            "UPDATE items SET ingest_status = ?, ingest_run_id = ?, ingest_error = NULL WHERE id = ?",
+            ("pending", run_id, int(row["id"])),
+        )
+        conn.commit()
+        return int(row["id"])
+
+
+def _db_mark_ok(conn: sqlite3.Connection, *, item_id: int, data: Dict[str, Any], run_id: str) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE items
+        SET name = ?,
+            brand = ?,
+            category = ?,
+            color_primary = ?,
+            material_main = ?,
+            fit = ?,
+            collar = ?,
+            price = ?,
+            vision_description = ?,
+            ingest_status = ?,
+            ingest_run_id = ?,
+            ingest_error = NULL
+        WHERE id = ?
+        """,
+        (
+            data.get("name"),
+            data.get("brand"),
+            data.get("category"),
+            data.get("color_primary"),
+            data.get("material_main"),
+            data.get("fit"),
+            data.get("collar"),
+            data.get("price"),
+            data.get("vision_description"),
+            "ok",
+            run_id,
+            int(item_id),
+        ),
+    )
+    conn.commit()
+
+
+def _db_mark_failed(conn: sqlite3.Connection, *, item_id: int, err: str, run_id: str) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE items SET ingest_status = ?, ingest_run_id = ?, ingest_error = ? WHERE id = ?",
+        ("failed", run_id, err[:500], int(item_id)),
+    )
+    conn.commit()
 
 
 def _robust_rmtree(path: Path) -> None:
-    """
-    Robust delete on Windows (handles read-only files).
-    """
     import stat
     import inspect
 
@@ -224,10 +330,6 @@ def _robust_rmtree(path: Path) -> None:
 
 
 def robust_move(src: Path, dst: Path, *, retries: int = 3, delay_s: float = 0.8) -> bool:
-    """
-    Robust move folder with Windows-lock retries.
-    If dst exists, remove it first (best-effort).
-    """
     for i in range(retries):
         try:
             if dst.exists():
@@ -236,16 +338,16 @@ def robust_move(src: Path, dst: Path, *, retries: int = 3, delay_s: float = 0.8)
             shutil.move(str(src), str(dst))
             return True
         except PermissionError:
-            logger.warning("      [!] PermissionError, retrying (%d/%d)...", i + 1, retries)
+            logger.warning("PermissionError, retrying (%d/%d)...", i + 1, retries)
             time.sleep(delay_s)
         except Exception as e:
-            logger.error("      [!] Move failed: %s", e)
+            logger.error("Move failed: %s", e)
             break
     return False
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Wardrobe Studio ingestion (run-registry instrumented).")
+    ap = argparse.ArgumentParser(description="Wardrobe Studio ingestion (idempotent + run-registry).")
 
     ap.add_argument(
         "--input-dir",
@@ -259,12 +361,21 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=str(settings.IMG_DIR),
         help="Archive/images dir (default: settings.IMG_DIR / 02_wardrobe_images)",
     )
+    ap.add_argument(
+        "--quarantine-dir",
+        type=str,
+        default=str(settings.BASE_DIR / "04_user_data" / "quarantine_input"),
+        help="Where duplicates/conflicts are moved (default: 04_user_data/quarantine_input)",
+    )
+
     ap.add_argument("--user", type=str, default="", help="Only ingest for this user (andreas|karen). Empty = all.")
     ap.add_argument("--max-items", type=int, default=0, help="Stop after N processed items (0 = unlimited).")
     ap.add_argument("--dry-run", action="store_true", help="No OpenAI, no DB writes, no moves.")
+    ap.add_argument("--fake-ai", action="store_true", help="No OpenAI. Still moves + writes DB (test/CI friendly).")
+
     ap.add_argument("--model", type=str, default=os.environ.get("WARDROBE_INGEST_MODEL", "gpt-4o-mini"))
     ap.add_argument("--max-images", type=int, default=3, help="Max images sent to OpenAI per item (default 3).")
-    ap.add_argument("--force", action="store_true", help="Process even if dest exists / DB has same image_path.")
+    ap.add_argument("--force", action="store_true", help="Process even if fingerprint already ingested / conflicts.")
     return ap.parse_args(argv)
 
 
@@ -275,13 +386,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     input_dir = Path(args.input_dir)
     archive_dir = Path(args.archive_dir)
+    quarantine_dir = Path(args.quarantine_dir)
 
     meta = {
         "input_dir": str(input_dir),
         "archive_dir": str(archive_dir),
+        "quarantine_dir": str(quarantine_dir),
         "user": args.user or None,
         "max_items": args.max_items,
         "dry_run": bool(args.dry_run),
+        "fake_ai": bool(args.fake_ai),
         "model": args.model,
         "max_images": args.max_images,
         "force": bool(args.force),
@@ -299,7 +413,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
 
         # determine users
-        users: List[str]
         if args.user:
             u = args.user.strip().lower()
             if u not in VALID_USERS:
@@ -312,9 +425,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         stats = Stats()
 
-        # DB connection for idempotence checks (read-only-ish)
-        conn = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-        conn.row_factory = sqlite3.Row
+        conn = _connect_ro()
         try:
             for user in users:
                 user = user.strip().lower()
@@ -337,7 +448,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
                     stats.scanned += 1
                     item_name = item_dir.name
-                    run.event("item.start", data={"user": user, "item": item_name})
 
                     # gather content
                     img_files = _list_image_files(item_dir)
@@ -348,16 +458,35 @@ def main(argv: Optional[List[str]] = None) -> int:
                         run.event("item.skip_empty", level="WARN", data={"user": user, "item": item_name})
                         continue
 
+                    fp = _folder_signature_fingerprint(item_dir)
                     dest_rel = f"{user}/{item_name}"
                     dest_dir = archive_dir / user / item_name
 
-                    # idempotence: if DB already has this image_path, skip (unless --force)
-                    if (not args.force) and _db_has_image_path(conn, user, dest_rel):
+                    run.event("item.start", data={"user": user, "item": item_name, "fingerprint": fp[:12]})
+
+                    # Fast skip: fingerprint already ingested OK
+                    existing = _db_get_by_fingerprint(conn, user, fp)
+                    if existing and (existing["ingest_status"] or "").lower() == "ok" and (not args.force):
+                        # move duplicate out of input to quarantine
+                        quarantine_target = quarantine_dir / user / f"{item_name}__dup__{fp[:8]}"
+                        ok_q = robust_move(item_dir, quarantine_target)
                         stats.skipped += 1
-                        run.event("item.skip_already_ingested", level="WARN", data={"user": user, "item": item_name, "image_path": dest_rel})
+                        stats.quarantined += 1 if ok_q else 0
+                        run.event(
+                            "item.dup.skip",
+                            level="WARN",
+                            data={
+                                "user": user,
+                                "item": item_name,
+                                "fingerprint": fp,
+                                "quarantine_ok": ok_q,
+                                "quarantine_target": str(quarantine_target),
+                                "existing_item_id": int(existing["id"]),
+                            },
+                        )
                         continue
 
-                    # dry-run: simulate
+                    # dry-run: simulate only (no DB, no moves, no OpenAI)
                     if args.dry_run:
                         stats.processed += 1
                         stats.ok += 1
@@ -366,6 +495,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                             data={
                                 "user": user,
                                 "item": item_name,
+                                "fingerprint": fp,
                                 "images": len(img_files),
                                 "text_chars": len(txt_context),
                                 "would_move_to": str(dest_dir),
@@ -374,83 +504,162 @@ def main(argv: Optional[List[str]] = None) -> int:
                         )
                         continue
 
-                    # analyze via OpenAI
+                    # claim pending row (prevents orphan moves)
                     stats.processed += 1
-                    run.event("item.analyze.start", data={"user": user, "item": item_name, "images": len(img_files), "text_chars": len(txt_context)})
-                    data = analyze_item_hybrid(img_files, txt_context, model=args.model, max_images=args.max_images)
+                    try:
+                        conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+                        conn_w.row_factory = sqlite3.Row
+                        try:
+                            item_id = _db_claim_pending(
+                                conn_w,
+                                user=user,
+                                item_name=item_name,
+                                image_path=dest_rel,
+                                fp=fp,
+                                run_id=run.run_id,
+                            )
+                        finally:
+                            conn_w.close()
+                    except Exception as e:
+                        stats.failed += 1
+                        run.event("item.claim_failed", level="ERROR", message=str(e), data={"user": user, "item": item_name})
+                        continue
+
+                    # analyze (fake-ai or OpenAI)
+                    if args.fake_ai:
+                        data = _fake_ai(item_name, txt_context)
+                    else:
+                        run.event("item.analyze.start", data={"user": user, "item": item_name, "images": len(img_files), "text_chars": len(txt_context)})
+                        data = analyze_item_hybrid(img_files, txt_context, model=args.model, max_images=args.max_images)
+
                     if not data:
                         stats.failed += 1
-                        run.event("item.analyze.failed", level="ERROR", data={"user": user, "item": item_name})
+                        try:
+                            conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+                            conn_w.row_factory = sqlite3.Row
+                            try:
+                                _db_mark_failed(conn_w, item_id=item_id, err="AnalyzeFailed", run_id=run.run_id)
+                            finally:
+                                conn_w.close()
+                        except Exception:
+                            pass
+                        run.event("item.analyze.failed", level="ERROR", data={"user": user, "item": item_name, "item_id": item_id})
                         continue
 
                     # close file handles before move (Windows)
                     gc.collect()
 
-                    # move folder first (so DB never points to missing images)
-                    if dest_dir.exists() and not args.force:
-                        stats.failed += 1
-                        run.event("item.dest_exists", level="ERROR", data={"user": user, "item": item_name, "dest_dir": str(dest_dir)})
-                        continue
+                    moved_this_run = False
 
-                    ok_move = robust_move(item_dir, dest_dir)
-                    if not ok_move:
-                        stats.failed += 1
-                        run.event("item.move.failed", level="ERROR", data={"user": user, "item": item_name, "dest_dir": str(dest_dir)})
-                        continue
+                    # move folder into archive if needed
+                    if dest_dir.exists():
+                        if item_dir.exists():
+                            if args.force:
+                                moved_this_run = robust_move(item_dir, dest_dir)
+                                if not moved_this_run:
+                                    stats.failed += 1
+                                    run.event("item.move.failed", level="ERROR", data={"user": user, "item": item_name, "dest_dir": str(dest_dir), "item_id": item_id})
+                                    continue
+                            else:
+                                # conflict: both src and dest exist -> quarantine src
+                                quarantine_target = quarantine_dir / user / f"{item_name}__conflict__{fp[:8]}"
+                                ok_q = robust_move(item_dir, quarantine_target)
+                                stats.failed += 1
+                                stats.quarantined += 1 if ok_q else 0
+                                try:
+                                    conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+                                    conn_w.row_factory = sqlite3.Row
+                                    try:
+                                        _db_mark_failed(conn_w, item_id=item_id, err="ConflictSrcAndDestExist", run_id=run.run_id)
+                                    finally:
+                                        conn_w.close()
+                                except Exception:
+                                    pass
+                                run.event(
+                                    "item.conflict.src_and_dest_exist",
+                                    level="ERROR",
+                                    data={
+                                        "user": user,
+                                        "item": item_name,
+                                        "item_id": item_id,
+                                        "dest_dir": str(dest_dir),
+                                        "quarantine_ok": ok_q,
+                                        "quarantine_target": str(quarantine_target),
+                                    },
+                                )
+                                continue
+                        else:
+                            # src already gone; dest exists -> recovery path
+                            run.event("item.recover.dest_exists", data={"user": user, "item": item_name, "item_id": item_id, "dest_dir": str(dest_dir)})
+                    else:
+                        if not item_dir.exists():
+                            stats.failed += 1
+                            try:
+                                conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+                                conn_w.row_factory = sqlite3.Row
+                                try:
+                                    _db_mark_failed(conn_w, item_id=item_id, err="SourceMissing", run_id=run.run_id)
+                                finally:
+                                    conn_w.close()
+                            except Exception:
+                                pass
+                            run.event("item.source_missing", level="ERROR", data={"user": user, "item": item_name, "item_id": item_id})
+                            continue
+                        moved_this_run = robust_move(item_dir, dest_dir)
+                        if not moved_this_run:
+                            stats.failed += 1
+                            try:
+                                conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+                                conn_w.row_factory = sqlite3.Row
+                                try:
+                                    _db_mark_failed(conn_w, item_id=item_id, err="MoveFailed", run_id=run.run_id)
+                                finally:
+                                    conn_w.close()
+                            except Exception:
+                                pass
+                            run.event("item.move.failed", level="ERROR", data={"user": user, "item": item_name, "dest_dir": str(dest_dir), "item_id": item_id})
+                            continue
 
-                    # write DB entry (saga: rollback move on DB failure)
+                    # DB update OK
                     try:
                         conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+                        conn_w.row_factory = sqlite3.Row
                         try:
-                            cur = conn_w.cursor()
-                            cur.execute(
-                                """
-                                INSERT INTO items (
-                                    user_id, name, brand, category, color_primary,
-                                    color_variant, needs_review,
-                                    material_main, fit, collar, price, vision_description, image_path
-                                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                                """,
-                                (
-                                    user,
-                                    (data.get("name") or item_name),
-                                    data.get("brand"),
-                                    data.get("category"),
-                                    data.get("color_primary"),
-                                    None,
-                                    0,
-                                    data.get("material_main"),
-                                    data.get("fit"),
-                                    data.get("collar"),
-                                    data.get("price"),
-                                    data.get("vision_description"),
-                                    dest_rel,
-                                ),
-                            )
-                            conn_w.commit()
+                            _db_mark_ok(conn_w, item_id=item_id, data=data, run_id=run.run_id)
                         finally:
                             conn_w.close()
 
                         stats.ok += 1
-                        run.event("item.ok", data={"user": user, "item": item_name, "image_path": dest_rel})
+                        run.event("item.ok", data={"user": user, "item": item_name, "item_id": item_id, "image_path": dest_rel})
 
                     except Exception as e:
                         stats.failed += 1
-                        run.event("item.db_insert_failed", level="ERROR", message=str(e), data={"user": user, "item": item_name})
+                        run.event("item.db_update_failed", level="ERROR", message=str(e), data={"user": user, "item": item_name, "item_id": item_id})
 
-                        # rollback: move folder back into input
+                        # rollback move if we moved this run
+                        if moved_this_run and dest_dir.exists():
+                            rollback_target = input_dir / user / item_name
+                            ok_rb = robust_move(dest_dir, rollback_target)
+                            run.event("item.rollback_move", data={"ok": ok_rb, "user": user, "item": item_name, "item_id": item_id})
                         try:
-                            rollback_ok = robust_move(dest_dir, item_dir)
-                            run.event("item.rollback_move", data={"ok": rollback_ok, "user": user, "item": item_name})
-                        except Exception as e2:
-                            run.event("item.rollback_move_failed", level="ERROR", message=str(e2), data={"user": user, "item": item_name})
+                            conn_w2 = sqlite3.connect(str(settings.DB_PATH), timeout=5)
+                            conn_w2.row_factory = sqlite3.Row
+                            try:
+                                _db_mark_failed(conn_w2, item_id=item_id, err=f"DbUpdateFailed:{type(e).__name__}", run_id=run.run_id)
+                            finally:
+                                conn_w2.close()
+                        except Exception:
+                            pass
 
-            # end loop
+            # end loops
         finally:
             conn.close()
 
         dur_ms = int((_now_s() - t0) * 1000)
-        summary = f"scanned={stats.scanned} processed={stats.processed} ok={stats.ok} failed={stats.failed} skipped={stats.skipped} dry_run={args.dry_run} dur_ms={dur_ms}"
+        summary = (
+            f"scanned={stats.scanned} processed={stats.processed} ok={stats.ok} failed={stats.failed} "
+            f"skipped={stats.skipped} quarantined={stats.quarantined} dry_run={args.dry_run} fake_ai={args.fake_ai} dur_ms={dur_ms}"
+        )
         run.event("ingest.done", data={"stats": stats.__dict__, "dur_ms": dur_ms})
 
         if stats.failed > 0 and stats.ok > 0:
