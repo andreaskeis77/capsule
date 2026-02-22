@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8">
@@ -96,7 +96,12 @@
 
             <div class="col-md-4">
               <label class="form-label">Context</label>
-              <input class="form-control" name="context" value="{{ item.context or '' }}" placeholder="executive / private">
+              <select class="form-select" name="context">
+                <option value="" {% if not item.context %}selected{% endif %}>(leer)</option>
+                <option value="executive" {% if item.context and item.context|lower == 'executive' %}selected{% endif %}>executive</option>
+                <option value="private" {% if item.context and item.context|lower == 'private' %}selected{% endif %}>private</option>
+              </select>
+              <div class="form-text muted">Nur diese Werte sind erlaubt. Leer = nicht gesetzt.</div>
             </div>
 
             <div class="col-md-4">

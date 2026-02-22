@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8">
@@ -53,6 +53,8 @@
           <span class="badge text-bg-secondary pill">{{ item.top_category }}</span>
           {% if item.category %}<span class="badge text-bg-dark pill">{{ item.category }}</span>{% endif %}
           {% if item.needs_review %}<span class="badge text-bg-warning pill">needs_review</span>{% endif %}
+          {% if item.context %}<span class="badge text-bg-info pill">context: {{ item.context }}</span>{% endif %}
+          {% if item.size %}<span class="badge text-bg-light pill">size: {{ item.size }}</span>{% endif %}
         </div>
 
         <div class="h3 fw-bold mb-1">{{ item.name }}</div>
@@ -83,10 +85,19 @@
           <div class="col-md-6">
             <div class="kv"><span class="k">Preis:</span> <span class="v">{{ item.price or '---' }}</span></div>
             <div class="kv"><span class="k">User:</span> <span class="v">{{ item.user_id or user_id }}</span></div>
+            <div class="kv"><span class="k">Context:</span> <span class="v">{{ item.context or '---' }}</span></div>
+            <div class="kv"><span class="k">Size:</span> <span class="v">{{ item.size or '---' }}</span></div>
             <div class="kv"><span class="k">Created:</span> <span class="v">{{ item.created_at or '---' }}</span></div>
             <div class="kv"><span class="k">image_path:</span> <span class="v">{{ item.image_path or '---' }}</span></div>
           </div>
         </div>
+
+        {% if item.notes %}
+        <div class="mt-3">
+          <div class="small fw-bold text-uppercase muted mb-1">Notes</div>
+          <div class="small">{{ item.notes }}</div>
+        </div>
+        {% endif %}
 
         <hr class="my-4">
 

@@ -210,6 +210,9 @@ def index():
     user = request.args.get("user", "karen").strip().lower()
     mode = request.args.get("mode", "").strip().lower()
     top = request.args.get("top", "").strip()
+    ctx = request.args.get("ctx", "").strip().lower()
+    review_raw = request.args.get("review", "").strip().lower()
+    review_only = review_raw in ("1","true","yes","on")
     ids_raw = request.args.get("ids", "")
 
     selection_mode = mode == "select"
@@ -239,13 +242,61 @@ def index():
         d["primary_image"] = d["all_images"][0] if d["all_images"] else None
         items_all.append(d)
 
-    # Apply top category filter within the base set
-    if top:
-        items = [it for it in items_all if it.get("top_category") == top]
-    else:
-        items = items_all
+    # Apply context/review filters first (base filters)
 
-    # Stable order of filter buttons
+
+    items_base = items_all
+
+
+    if ctx:
+
+
+        items_base = [it for it in items_base if (it.get("context") or "").lower() == ctx]
+
+
+    if review_only:
+
+
+        items_base = [it for it in items_base if int(it.get("needs_review") or 0) == 1]
+
+
+
+    # Recompute top_counts after base filters
+
+
+    top_counts = {}
+
+
+    for it in items_base:
+
+
+        tc = it.get("top_category")
+
+
+        if not tc:
+
+
+            continue
+
+
+        top_counts[tc] = top_counts.get(tc, 0) + 1
+
+
+
+    # Apply top category filter within the filtered base set
+
+
+    if top:
+
+
+        items = [it for it in items_base if it.get("top_category") == top]
+
+
+    else:
+
+
+        items = items_base
+
     top_order = [
         "Kleider",
         "Blusen & Oberteile",
@@ -269,8 +320,11 @@ def index():
         items=items,
         active_top=top,
         top_filters=top_filters,
-        total_count=len(items_all),
+        total_count=len(items_base),
         shown_count=len(items),
+        base_count=len(items_all),
+        active_ctx=ctx,
+        review_only=review_only,
         selection_mode=selection_mode,
         selected_ids=selected_ids,
         ids_param=ids_param,
@@ -425,6 +479,7 @@ def api_get_item_detail(item_id: int):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=True, use_reloader=False)
+
 
 
 
