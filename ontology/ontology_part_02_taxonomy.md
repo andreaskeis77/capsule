@@ -1,5 +1,3 @@
-
-```markdown
 <!-- FILE: ontology_part_02_taxonomy.md -->
 # Part 02 – Kategorienhierarchie (category)
 version: "0.9.0"
@@ -488,7 +486,7 @@ categories:
     parent_id: cat_apparel_outerwear
     gender_target: [women, men, unisex, kids]
     typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
-    examples: ["Übergangsjacke"]
+    examples: ["Jeansjacke", "Übergangsjacke"]
 
   - id: cat_coats
     label_de: "Mäntel"
