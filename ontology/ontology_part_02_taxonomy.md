@@ -386,3 +386,196 @@ categories:
     gender_target: [women, men, unisex, kids]
     typical_attributes: [attr_volume_l, attr_strap_type, attr_closure_type]
     examples: ["Rucksack", "Shopper", "Umhängetasche"]
+
+  # -------------------------------------------------------------------
+  # Capsule Studio Canonical UI Categories (needed for API validation)
+  # -------------------------------------------------------------------
+
+  - id: cat_blouses
+    label_de: "Blusen"
+    label_en: "Blouses"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_tops
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Schlupfbluse", "Hemdbluse"]
+
+  - id: cat_tshirts
+    label_de: "T-Shirts"
+    label_en: "T-Shirts"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_tops
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Basic T-Shirt"]
+
+  - id: cat_tops
+    label_de: "Oberteile"
+    label_en: "Tops"
+    description_de: "Restkategorie für Tops (nicht T-Shirt, nicht Bluse)."
+    parent_id: cat_apparel_tops
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Top", "Tanktop"]
+
+  - id: cat_sweaters
+    label_de: "Pullover"
+    label_en: "Sweaters"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_tops
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Strickpullover"]
+
+  - id: cat_cardigans
+    label_de: "Strickjacken"
+    label_en: "Cardigans"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_tops
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Cardigan", "Longcardigan"]
+
+  - id: cat_blazers
+    label_de: "Blazer"
+    label_en: "Blazers"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_outerwear
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Business-Blazer"]
+
+  - id: cat_skirts
+    label_de: "Röcke"
+    label_en: "Skirts"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_bottoms
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Bleistiftrock"]
+
+  - id: cat_trousers
+    label_de: "Hosen"
+    label_en: "Trousers"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_bottoms
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Jeans", "Stoffhose"]
+
+  - id: cat_tights
+    label_de: "Strumpfhosen"
+    label_en: "Tights"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_underwear
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["60 den"]
+
+  - id: cat_belts
+    label_de: "Gürtel"
+    label_en: "Belts"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Ledergürtel"]
+
+  - id: cat_jackets
+    label_de: "Jacken"
+    label_en: "Jackets"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_outerwear
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Übergangsjacke"]
+
+  - id: cat_coats
+    label_de: "Mäntel"
+    label_en: "Coats"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_apparel_outerwear
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_color_family, attr_material_composition]
+    examples: ["Wollmantel", "Trenchcoat"]
+
+  - id: cat_other
+    label_de: "Anderes"
+    label_en: "Other"
+    description_de: "Poncho/Cape/Schal/Stola/Tuch etc."
+    parent_id: cat_apparel
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Poncho", "Cape", "Schal"]
+
+  - id: cat_earrings
+    label_de: "Ohrringe"
+    label_en: "Earrings"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Creolen"]
+
+  - id: cat_watches
+    label_de: "Uhren"
+    label_en: "Watches"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Armbanduhr"]
+
+  - id: cat_rings
+    label_de: "Ringe"
+    label_en: "Rings"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Ring"]
+
+  - id: cat_necklaces
+    label_de: "Ketten"
+    label_en: "Necklaces"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Halskette"]
+
+  - id: cat_brooches
+    label_de: "Broschen"
+    label_en: "Brooches"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Brosche"]
+
+  - id: cat_hats
+    label_de: "Haare / Mützen"
+    label_en: "Hats & Hair"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Mütze", "Cap"]
+
+  - id: cat_bags
+    label_de: "Taschen"
+    label_en: "Bags"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_accessories
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_color_family, attr_material_composition]
+    examples: ["Handtasche", "Clutch"]
+
+  - id: cat_shoes
+    label_de: "Schuhe"
+    label_en: "Shoes"
+    description_de: "Canonical UI category (Capsule Studio)."
+    parent_id: cat_footwear
+    gender_target: [women, men, unisex, kids]
+    typical_attributes: [attr_brand, attr_size_system, attr_size_label_raw, attr_material_composition, attr_closure_type]
+    examples: ["Sneaker", "Pumps"]
