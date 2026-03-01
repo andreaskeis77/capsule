@@ -16,27 +16,12 @@
     .pill { border-radius: 999px; }
     .muted { color: #6c757d; }
     label { font-weight: 600; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
   </style>
 </head>
 
 <body>
 
-
-{% macro img_url(p) -%}
-  {%- if not p -%}
-  {%- else -%}
-    {%- set s = (p|string)|replace('\\','/') -%}
-    {%- if s.startswith('http') -%}
-      {{- s -}}
-    {%- elif s.startswith('/images/') -%}
-      {{- s -}}
-    {%- elif s.startswith('images/') -%}
-      /{{- s -}}
-    {%- else -%}
-      /images/{{- s -}}
-    {%- endif -%}
-  {%- endif -%}
-{%- endmacro %}
 {% macro img_url(p) -%}
   {%- if not p -%}
   {%- else -%}
@@ -53,134 +38,155 @@
   {%- endif -%}
 {%- endmacro %}
 
-  <div class="container py-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <div>
-        <div class="h5 mb-0 fw-bold">Admin – Item bearbeiten</div>
-        <div class="small muted">ID #{{ item.id }} · {{ item.top_category }} · User: {{ item.user_id or user_id }}</div>
-      </div>
-      <div class="d-flex gap-2">
-        <a class="btn btn-outline-secondary pill" href="/?user={{ user_id }}&mode=admin">
-          <i class="bi bi-arrow-left"></i> Zur Admin-Übersicht
-        </a>
-        <a class="btn btn-outline-secondary pill" href="/item/{{ item.id }}?user={{ user_id }}">
-          <i class="bi bi-eye"></i> Detailansicht
-        </a>
+<div class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <div class="h5 mb-0 fw-bold">Admin – Item bearbeiten</div>
+      <div class="small muted">
+        ID #{{ item.id }}
+        {% if item.category_group %} · {{ item.category_group }}{% endif %}
+        · User: {{ item.user_id or user_id }}
       </div>
     </div>
-
-    <div class="cardx bg-white">
-      {% if item.all_images and item.all_images|length > 0 %}
-        <img class="hero-img" src="{{ img_url(item.all_images[0]) }}" alt="{{ item.name|e }}">
-      {% else %}
-        <div class="p-5 text-center muted">
-          <i class="bi bi-image fs-1"></i>
-          <div class="mt-2">Kein Bild vorhanden</div>
-        </div>
-      {% endif %}
-
-      <div class="p-4">
-        <form method="POST" action="/admin/item/{{ item.id }}/save?user={{ user_id }}">
-          <div class="row g-3">
-            <div class="col-md-8">
-              <label class="form-label">Name</label>
-              <input class="form-control" name="name" value="{{ item.name or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Category</label>
-              <input class="form-control" name="category" value="{{ item.category or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Brand</label>
-              <input class="form-control" name="brand" value="{{ item.brand or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Color Primary</label>
-              <input class="form-control" name="color_primary" value="{{ item.color_primary or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Color Variant</label>
-              <input class="form-control" name="color_variant" value="{{ item.color_variant or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Material</label>
-              <input class="form-control" name="material_main" value="{{ item.material_main or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Fit</label>
-              <input class="form-control" name="fit" value="{{ item.fit or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Collar</label>
-              <input class="form-control" name="collar" value="{{ item.collar or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Size</label>
-              <input class="form-control" name="size" value="{{ item.size or '' }}">
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Context</label>
-              <select class="form-select" name="context">
-                <option value="" {% if not item.context %}selected{% endif %}>(leer)</option>
-                <option value="executive" {% if item.context and item.context|lower == 'executive' %}selected{% endif %}>executive</option>
-                <option value="private" {% if item.context and item.context|lower == 'private' %}selected{% endif %}>private</option>
-              </select>
-              <div class="form-text muted">Nur diese Werte sind erlaubt. Leer = nicht gesetzt.</div>
-            </div>
-
-            <div class="col-md-4">
-              <label class="form-label">Price</label>
-              <input class="form-control" name="price" value="{{ item.price or '' }}">
-            </div>
-
-            <div class="col-md-8">
-              <label class="form-label">Notes</label>
-              <textarea class="form-control" name="notes" rows="3">{{ item.notes or '' }}</textarea>
-            </div>
-
-            <div class="col-md-4 d-flex align-items-end">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="needs_review" value="1" id="needs_review"
-                       {% if item.needs_review %}checked{% endif %}>
-                <label class="form-check-label" for="needs_review">needs_review</label>
-              </div>
-            </div>
-          </div>
-
-          <hr class="my-4">
-
-          <div class="d-flex justify-content-between align-items-center">
-            <div class="small muted">
-              image_path: <span class="fw-semibold">{{ item.image_path or '---' }}</span>
-            </div>
-            <div class="d-flex gap-2">
-              <a class="btn btn-outline-secondary" href="/?user={{ user_id }}&mode=admin">Abbrechen</a>
-              <button class="btn btn-dark" type="submit">
-                Speichern <i class="bi bi-check2 ms-1"></i>
-              </button>
-            </div>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <div class="mt-4 p-3 bg-light rounded border-start border-primary border-4">
-      <div class="small fw-bold text-uppercase muted mb-1">KI-Analyse (read-only)</div>
-      <div class="small fst-italic">{{ item.vision_description or '' }}</div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary pill" href="/?user={{ user_id }}&mode=admin">
+        <i class="bi bi-arrow-left"></i> Zur Admin-Übersicht
+      </a>
+      <a class="btn btn-outline-secondary pill" href="/item/{{ item.id }}?user={{ user_id }}">
+        <i class="bi bi-eye"></i> Detailansicht
+      </a>
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <div class="cardx bg-white">
+    {% if item.all_images and item.all_images|length > 0 %}
+      <img class="hero-img" src="{{ img_url(item.all_images[0]) }}" alt="{{ item.name|e }}">
+    {% else %}
+      <div class="p-5 text-center muted">
+        <i class="bi bi-image fs-1"></i>
+        <div class="mt-2">Kein Bild vorhanden</div>
+      </div>
+    {% endif %}
+
+    <div class="p-4">
+      <form method="POST" action="/admin/item/{{ item.id }}/save?user={{ user_id }}">
+        <div class="row g-3">
+          <div class="col-md-8">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" value="{{ item.name or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Kategorie</label>
+            <select class="form-select" name="category">
+              {% if item.category_is_unknown and item.category_raw %}
+                <option value="{{ item.category_raw }}" selected>⚠ unknown: {{ item.category_raw }}</option>
+              {% endif %}
+              <option value="" {% if not item.category %}selected{% endif %}>(leer)</option>
+
+              {% for grp in category_admin_groups %}
+                <optgroup label="{{ grp.label }}">
+                  {% for opt in grp.options %}
+                    <option value="{{ opt.value }}" {% if item.category and item.category == opt.value %}selected{% endif %}>
+                      {{ opt.label }}
+                    </option>
+                  {% endfor %}
+                </optgroup>
+              {% endfor %}
+            </select>
+
+            {% if item.category_mapped_from_raw %}
+              <div class="form-text muted mono">raw: {{ item.category_raw }}</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Brand</label>
+            <input class="form-control" name="brand" value="{{ item.brand or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Color Primary</label>
+            <input class="form-control" name="color_primary" value="{{ item.color_primary or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Color Variant</label>
+            <input class="form-control" name="color_variant" value="{{ item.color_variant or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Material</label>
+            <input class="form-control" name="material_main" value="{{ item.material_main or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Fit</label>
+            <input class="form-control" name="fit" value="{{ item.fit or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Collar</label>
+            <input class="form-control" name="collar" value="{{ item.collar or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Size</label>
+            <input class="form-control" name="size" value="{{ item.size or '' }}">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Context</label>
+            <select class="form-select" name="context">
+              <option value="" {% if not item.context %}selected{% endif %}>(leer)</option>
+              <option value="executive" {% if item.context and item.context|lower == 'executive' %}selected{% endif %}>executive</option>
+              <option value="private" {% if item.context and item.context|lower == 'private' %}selected{% endif %}>private</option>
+            </select>
+            <div class="form-text muted">Nur diese Werte sind erlaubt. Leer = nicht gesetzt.</div>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Price</label>
+            <input class="form-control" name="price" value="{{ item.price or '' }}">
+          </div>
+
+          <div class="col-md-8">
+            <label class="form-label">Notes</label>
+            <textarea class="form-control" name="notes" rows="3">{{ item.notes or '' }}</textarea>
+          </div>
+
+          <div class="col-md-4 d-flex align-items-end">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="needs_review" value="1" id="needs_review"
+                     {% if item.needs_review %}checked{% endif %}>
+              <label class="form-check-label" for="needs_review">needs_review</label>
+            </div>
+          </div>
+        </div>
+
+        <hr class="my-4">
+
+        <div class="d-flex justify-content-between align-items-center">
+          <div class="small muted">
+            image_path: <span class="fw-semibold">{{ item.image_path or '---' }}</span>
+          </div>
+          <div class="d-flex gap-2">
+            <a class="btn btn-outline-secondary" href="/?user={{ user_id }}&mode=admin">Abbrechen</a>
+            <button class="btn btn-dark" type="submit">
+              Speichern <i class="bi bi-check2 ms-1"></i>
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="mt-4 p-3 bg-light rounded border-start border-primary border-4">
+    <div class="small fw-bold text-uppercase muted mb-1">KI-Analyse (read-only)</div>
+    <div class="small fst-italic">{{ item.vision_description or '' }}</div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
-
-

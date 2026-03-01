@@ -48,3 +48,17 @@ docs/_snapshot/
 .coverage
 htmlcov/
 coverage.xml
+
+# release artifacts / staging
+_release_staging/
+
+# pytest / python caches
+.pytest_cache/
+**/__pycache__/
+# release artifacts / staging
+_release_staging/
+
+# pytest / python caches
+.pytest_cache/
+**/__pycache__/
+

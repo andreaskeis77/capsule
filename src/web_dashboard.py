@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import urllib.parse
 from pathlib import Path
@@ -12,13 +11,11 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 
 from src import settings
 from src.db_schema import ensure_schema
+from src import category_map as cm
 
-def _ensure_db_ready():
-    # Reload settings so env overrides (tests) are honored.
-    try:
-        settings.reload_settings()
-    except Exception:
-        pass
+# Ensure DB schema exists (best-effort; tests rely on ensure_schema)
+ensure_schema()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("WardrobeAPI")
 
@@ -28,7 +25,19 @@ app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 flask_app = app
 
 
-def get_db_connection():
+def _ensure_db_ready() -> None:
+    # Reload settings so env overrides (tests) are honored.
+    try:
+        settings.reload_settings()
+    except Exception:
+        pass
+    try:
+        ensure_schema()
+    except Exception:
+        pass
+
+
+def get_db_connection() -> sqlite3.Connection:
     # Read from settings dynamically (supports settings.reload_settings())
     conn = sqlite3.connect(str(settings.DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -36,8 +45,7 @@ def get_db_connection():
 
 
 @app.route("/images/<path:filename>")
-def serve_images(filename):
-    # Read from settings dynamically (supports settings.reload_settings())
+def serve_images(filename: str):
     return send_from_directory(str(settings.IMG_DIR), urllib.parse.unquote(filename))
 
 
@@ -79,37 +87,6 @@ def _parse_ids_param(raw: Optional[str], limit: int = 500) -> List[int]:
     return out
 
 
-def _infer_top_category(category_value: Optional[str], name_value: Optional[str] = None) -> str:
-    """
-    Heuristische Zuordnung DB-category -> Oberbegriff für Karen (UI-Filter).
-    DB category ist in eurem System typischerweise ein Ontologie-ID-String (z.B. cat_...),
-    kann aber auch Freitext sein (legacy). Daher rein stringbasiert.
-    """
-    c = _safe_str(category_value).lower()
-    n = _safe_str(name_value).lower()
-    blob = f"{c} {n}".strip()
-
-    # Reihenfolge ist wichtig (spezifisch -> unspezifisch)
-    if any(k in blob for k in ["shoe", "footwear", "schuh", "sneaker", "boot", "stiefel", "loafer", "pumps", "sandale"]):
-        return "Schuhe"
-    if any(k in blob for k in ["bag", "handtasche", "clutch", "tote", "purse", "rucksack", "backpack"]):
-        return "Handtaschen"
-    if any(k in blob for k in ["dress", "kleid"]):
-        return "Kleider"
-    if any(k in blob for k in ["bluse", "shirt", "top", "pullover", "sweater", "hemd", "blazer"]):
-        return "Blusen & Oberteile"
-    if any(k in blob for k in ["hose", "pants", "jeans", "trouser"]):
-        return "Hosen"
-    if any(k in blob for k in ["rock", "skirt"]):
-        return "Röcke"
-    if any(k in blob for k in ["mantel", "coat", "jacke", "jacket", "parka", "trench"]):
-        return "Jacken & Mäntel"
-    if any(k in blob for k in ["ohrring", "kette", "armband", "ring", "brosche", "schmuck", "accessoire", "accessory"]):
-        return "Accessoires"
-
-    return "Sonstiges"
-
-
 def _load_images_for_item(image_path: Optional[str]) -> List[str]:
     """
     Returns list of image URLs (relative to /images/...).
@@ -136,18 +113,16 @@ def _load_images_for_item(image_path: Optional[str]) -> List[str]:
 
 
 def _is_local_request() -> bool:
-    # Default safety: Admin only from localhost
     ip = (request.remote_addr or "").strip()
     return ip in ("127.0.0.1", "::1")
 
 
-def _require_admin_local():
+def _require_admin_local() -> None:
     if not _is_local_request():
         abort(403, description="Admin mode is only available locally (127.0.0.1).")
 
 
 def _api_base_url() -> str:
-    # same host as current request
     return request.host_url.rstrip("/")
 
 
@@ -167,7 +142,9 @@ def _allow_local_noauth() -> bool:
 
 
 def _require_api_key() -> None:
-    """Require X-API-Key for remote calls (legacy /api/v1 endpoints)."""
+    """
+    Require X-API-Key for remote calls (legacy /api/v1 endpoints).
+    """
     if _allow_local_noauth() and _is_local_request():
         return
     provided = (request.headers.get("X-API-Key") or "").strip()
@@ -203,18 +180,26 @@ def index():
     """
     Dashboard:
     - default user is karen (query param)
-    - optional top-category filters
+    - category filters (new taxonomy)
     - optional selection mode (?mode=select&ids=1,2,3)
     - admin mode (?mode=admin) is local-only
     """
     user = request.args.get("user", "karen").strip().lower()
     mode = request.args.get("mode", "").strip().lower()
-    top = request.args.get("top", "").strip()
+
+    # Base filters
     ctx = request.args.get("ctx", "").strip().lower()
     review_raw = request.args.get("review", "").strip().lower()
-    review_only = review_raw in ("1","true","yes","on")
-    ids_raw = request.args.get("ids", "")
+    review_only = review_raw in ("1", "true", "yes", "on")
 
+    # New category filter (plus backward compat: accept old ?top=... as alias)
+    cat_raw = request.args.get("cat", "").strip()
+    top_raw = request.args.get("top", "").strip()
+    if not cat_raw and top_raw:
+        cat_raw = top_raw
+    active_cat = cm.normalize_filter_key(cat_raw)  # "" if none/invalid
+
+    ids_raw = request.args.get("ids", "")
     selection_mode = mode == "select"
     admin_mode = mode == "admin"
 
@@ -225,106 +210,102 @@ def index():
 
     conn = get_db_connection()
     rows_base = conn.execute(
-        "SELECT id, user_id, name, category, color_primary, color_variant, needs_review, context, size, notes, image_path FROM items WHERE user_id = ? ORDER BY id DESC",
+        """
+        SELECT
+          id, user_id, name, brand, category,
+          color_primary, color_variant, needs_review,
+          context, size, notes, image_path
+        FROM items
+        WHERE user_id = ?
+        ORDER BY id DESC
+        """,
         (user,),
     ).fetchall()
 
-    # Build enriched items list
     items_all: List[Dict] = []
-    top_counts: Dict[str, int] = {}
-
     for r in rows_base:
         d = dict(r)
-        d["top_category"] = _infer_top_category(d.get("category"), d.get("name"))
-        top_counts[d["top_category"]] = top_counts.get(d["top_category"], 0) + 1
+
+        raw_cat = d.get("category")
+        name = d.get("name")
+
+        internal = cm.infer_internal_category(raw_cat, name=name)
+        d["category_key"] = internal  # internal canonical key or None
+        d["category_label"] = cm.display_category_label(raw_cat, name=name)
+        d["category_group"] = cm.category_group_for_internal(internal)
+        d["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
+        d["category_is_unknown"] = bool(d["category_raw"]) and internal is None
+        d["category_mapped_from_raw"] = bool(d["category_raw"]) and (internal is not None) and (d["category_raw"] != internal)
 
         d["all_images"] = _load_images_for_item(d.get("image_path"))
         d["primary_image"] = d["all_images"][0] if d["all_images"] else None
+
         items_all.append(d)
 
     # Apply context/review filters first (base filters)
-
-
     items_base = items_all
 
-
     if ctx:
-
-
         items_base = [it for it in items_base if (it.get("context") or "").lower() == ctx]
 
-
     if review_only:
-
-
         items_base = [it for it in items_base if int(it.get("needs_review") or 0) == 1]
 
-
-
-    # Recompute top_counts after base filters
-
-
-    top_counts = {}
-
-
+    # Count internal categories (post base filters)
+    internal_counts: Dict[str, int] = {}
     for it in items_base:
-
-
-        tc = it.get("top_category")
-
-
-        if not tc:
-
-
+        k = it.get("category_key")
+        if not k:
             continue
+        internal_counts[k] = internal_counts.get(k, 0) + 1
 
+    # Compute UI filter counts (including outerwear group)
+    filter_counts: Dict[str, int] = {}
+    for fkey, match_keys in cm.FILTER_MATCH.items():
+        filter_counts[fkey] = sum(internal_counts.get(k, 0) for k in match_keys)
 
-        top_counts[tc] = top_counts.get(tc, 0) + 1
-
-
-
-    # Apply top category filter within the filtered base set
-
-
-    if top:
-
-
-        items = [it for it in items_base if it.get("top_category") == top]
-
-
-    else:
-
-
-        items = items_base
-
-    top_order = [
-        "Kleider",
-        "Blusen & Oberteile",
-        "Hosen",
-        "Röcke",
-        "Jacken & Mäntel",
-        "Schuhe",
-        "Handtaschen",
-        "Accessoires",
-        "Sonstiges",
+    # Quick chips (only show if present to keep UI clean)
+    quick_filters = [
+        {"key": k, "label": cm.FILTER_LABEL[k], "count": filter_counts.get(k, 0)}
+        for k in cm.QUICK_FILTER_ORDER
+        if filter_counts.get(k, 0) > 0
     ]
-    top_filters: List[Tuple[str, int]] = [(k, top_counts.get(k, 0)) for k in top_order if top_counts.get(k, 0) > 0]
+
+    # Dropdown groups (show all, including 0)
+    filter_dropdown_groups = []
+    for g in cm.GROUP_ORDER:
+        keys = cm.FILTER_GROUPS.get(g, [])
+        opts = [{"key": k, "label": cm.FILTER_LABEL[k], "count": filter_counts.get(k, 0)} for k in keys]
+        filter_dropdown_groups.append({"label": g, "options": opts})
+
+    # Apply category filter
+    if active_cat:
+        match = cm.FILTER_MATCH.get(active_cat, set())
+        items = [it for it in items_base if it.get("category_key") in match]
+    else:
+        items = items_base
 
     conn.close()
 
     ids_param = ",".join(str(i) for i in selected_ids) if selection_mode else ""
+    active_cat_label = cm.FILTER_LABEL.get(active_cat, "") if active_cat else ""
 
     return render_template(
         "index.html",
         user_id=user,
         items=items,
-        active_top=top,
-        top_filters=top_filters,
+        # new category filter vars
+        active_cat=active_cat,
+        active_cat_label=active_cat_label,
+        quick_filters=quick_filters,
+        filter_dropdown_groups=filter_dropdown_groups,
+        # counts + base filters
         total_count=len(items_base),
         shown_count=len(items),
         base_count=len(items_all),
         active_ctx=ctx,
         review_only=review_only,
+        # selection/admin modes
         selection_mode=selection_mode,
         selected_ids=selected_ids,
         ids_param=ids_param,
@@ -348,7 +329,18 @@ def item_detail(item_id: int):
         abort(404)
 
     item = dict(row)
-    item["top_category"] = _infer_top_category(item.get("category"), item.get("name"))
+
+    raw_cat = item.get("category")
+    name = item.get("name")
+    internal = cm.infer_internal_category(raw_cat, name=name)
+
+    item["category_key"] = internal
+    item["category_label"] = cm.display_category_label(raw_cat, name=name)
+    item["category_group"] = cm.category_group_for_internal(internal)
+    item["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
+    item["category_is_unknown"] = bool(item["category_raw"]) and internal is None
+    item["category_mapped_from_raw"] = bool(item["category_raw"]) and (internal is not None) and (item["category_raw"] != internal)
+
     item["all_images"] = _load_images_for_item(item.get("image_path"))
     item["primary_image"] = item["all_images"][0] if item["all_images"] else None
 
@@ -372,11 +364,28 @@ def admin_edit_item(item_id: int):
         abort(404)
 
     item = dict(row)
-    item["top_category"] = _infer_top_category(item.get("category"), item.get("name"))
+
+    raw_cat = item.get("category")
+    name = item.get("name")
+    internal = cm.infer_internal_category(raw_cat, name=name)
+
+    item["category_key"] = internal
+    item["category_label"] = cm.display_category_label(raw_cat, name=name)
+    item["category_group"] = cm.category_group_for_internal(internal)
+    item["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
+    item["category_is_unknown"] = bool(item["category_raw"]) and internal is None
+    item["category_mapped_from_raw"] = bool(item["category_raw"]) and (internal is not None) and (item["category_raw"] != internal)
+
     item["all_images"] = _load_images_for_item(item.get("image_path"))
     item["primary_image"] = item["all_images"][0] if item["all_images"] else None
 
-    return render_template("admin_item_edit.html", user_id=user, item=item)
+    return render_template(
+        "admin_item_edit.html",
+        user_id=user,
+        item=item,
+        category_admin_groups=cm.admin_option_groups(),
+        category_admin_labels=cm.ADMIN_LABEL,
+    )
 
 
 @app.route("/admin/item/<int:item_id>/save", methods=["POST"])
@@ -409,6 +418,7 @@ def admin_save_item(item_id: int):
             else:
                 payload[f] = v.strip()
 
+    # keep old behavior: do not send empty strings (no clearing via admin form)
     payload = {k: v for k, v in payload.items() if not (isinstance(v, str) and v == "")}
 
     api_url = f"{_api_base_url()}/api/v2/items/{item_id}"
@@ -440,18 +450,27 @@ def api_get_inventory():
     _require_api_key()
     user = request.args.get("user", "karen")
 
-    # Be settings-aware for tests/env overrides
     try:
         settings.reload_settings()
     except Exception:
         pass
 
-    # Backward compatible inventory: older DBs may not have newer columns yet.
     conn = sqlite3.connect(str(settings.DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(items)").fetchall()}
-        want = ["id", "name", "category", "color_primary", "color_variant", "needs_review", "context", "size", "notes", "image_path"]
+        want = [
+            "id",
+            "name",
+            "category",
+            "color_primary",
+            "color_variant",
+            "needs_review",
+            "context",
+            "size",
+            "notes",
+            "image_path",
+        ]
         select = []
         for col in want:
             if col in cols:
@@ -465,6 +484,8 @@ def api_get_inventory():
         conn.close()
 
     return jsonify({"user": user, "items": items})
+
+
 @app.route("/api/v1/item/<int:item_id>", methods=["GET"])
 def api_get_item_detail(item_id: int):
     _require_api_key()
@@ -479,8 +500,3 @@ def api_get_item_detail(item_id: int):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=True, use_reloader=False)
-
-
-
-
-
