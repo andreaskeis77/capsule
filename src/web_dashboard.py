@@ -1,13 +1,24 @@
 ﻿# FILE: src/web_dashboard.py
 from __future__ import annotations
 
+import html as html_lib
+import json
 import logging
 import sqlite3
 import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory
+from flask import (
+    Flask,
+    abort,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+)
 
 from src import settings
 from src.db_schema import ensure_schema
@@ -134,7 +145,7 @@ def _api_key() -> str:
 
 
 def _api_headers() -> Dict[str, str]:
-    return {"X-API-Key": _api_key()}
+    return {"X-API-Key": _api_key(), "Accept": "application/json"}
 
 
 def _allow_local_noauth() -> bool:
@@ -155,24 +166,120 @@ def _require_api_key() -> None:
 def _http_request(method: str, url: str, json_body: Optional[Dict] = None) -> Tuple[int, str]:
     """
     Minimal HTTP client (stdlib) for calling our own API v2 from admin routes.
-    Avoids adding requests dependency.
+    Returns (status_code, body_text). IMPORTANT: preserves HTTPError status + response body.
     """
-    import json
     import urllib.request
+    import urllib.error
 
     data = None
     headers = _api_headers().copy()
+
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
     req = urllib.request.Request(url=url, data=data, method=method, headers=headers)
+
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            return resp.getcode(), body
+            raw = resp.read() or b""
+            try:
+                body = raw.decode("utf-8", errors="replace")
+            except Exception:
+                body = str(raw)
+            return int(resp.getcode()), body
+
+    except urllib.error.HTTPError as e:
+        # Preserve status + read body (this was previously swallowed -> status 0)
+        try:
+            raw = e.read() or b""
+        except Exception:
+            raw = b""
+        try:
+            body = raw.decode("utf-8", errors="replace")
+        except Exception:
+            body = str(raw)
+
+        status = int(getattr(e, "code", 0) or 0)
+        if not body:
+            body = str(e)
+        return status, body
+
+    except urllib.error.URLError as e:
+        return 0, f"URLError: {getattr(e, 'reason', e)}"
+
     except Exception as e:
         return 0, str(e)
+
+
+def _pretty_json(text: str) -> Optional[str]:
+    t = (text or "").strip()
+    if not t:
+        return None
+    if not (t.startswith("{") or t.startswith("[")):
+        return None
+    try:
+        obj = json.loads(t)
+        return json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)
+    except Exception:
+        return None
+
+
+def _admin_api_error_response(action: str, status: int, url: str, body: str, user: str):
+    """
+    Return a readable HTML error page for admin actions.
+    Shows the real API response (pretty JSON if possible).
+    """
+    http_status = status if 400 <= status <= 599 else 502
+
+    pretty = _pretty_json(body) or (body or "").strip() or "(no body)"
+    # avoid huge pages
+    if len(pretty) > 12000:
+        pretty = pretty[:12000] + "\n…(truncated)…"
+
+    back_url = f"/?user={urllib.parse.quote(user)}&mode=admin"
+
+    html = f"""<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Admin API Error</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }}
+    .card {{ max-width: 1100px; margin: 0 auto; border: 1px solid #e6e6e6; border-radius: 12px; padding: 18px; }}
+    .h1 {{ font-size: 22px; margin: 0 0 8px 0; }}
+    .muted {{ color: #666; }}
+    pre {{ background: #0b1020; color: #e8e8e8; padding: 14px; border-radius: 10px; overflow: auto; }}
+    a {{ color: #0b57d0; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .row {{ display: flex; gap: 16px; flex-wrap: wrap; }}
+    .pill {{ display:inline-block; padding: 4px 10px; border-radius: 999px; border:1px solid #ddd; background:#fafafa; font-size: 12px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="h1">Admin-Speichern fehlgeschlagen</div>
+    <div class="muted">
+      <span class="pill">action: {html_lib.escape(action)}</span>
+      <span class="pill">status: {http_status}</span>
+    </div>
+    <div class="muted" style="margin-top:10px;">
+      URL: <span style="font-family: ui-monospace, Menlo, Consolas, monospace;">{html_lib.escape(url)}</span>
+    </div>
+
+    <h3 style="margin:16px 0 8px 0;">API Response</h3>
+    <pre>{html_lib.escape(pretty)}</pre>
+
+    <div class="row" style="margin-top: 14px;">
+      <a href="{html_lib.escape(back_url)}">← Zur Admin-Übersicht</a>
+      <a href="javascript:history.back()">← Zurück</a>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    return make_response(html, http_status)
 
 
 @app.route("/")
@@ -425,7 +532,8 @@ def admin_save_item(item_id: int):
     status, body = _http_request("PATCH", api_url, json_body=payload)
 
     if status not in (200, 204):
-        abort(500, description=f"PATCH failed: {status} {body}")
+        logger.warning("Admin PATCH failed: status=%s url=%s body=%s", status, api_url, body[:800] if body else "")
+        return _admin_api_error_response("PATCH", status, api_url, body, user)
 
     return redirect(f"/?user={urllib.parse.quote(user)}&mode=admin")
 
@@ -439,7 +547,8 @@ def admin_delete_item(item_id: int):
     status, body = _http_request("DELETE", api_url, json_body=None)
 
     if status not in (200, 204):
-        abort(500, description=f"DELETE failed: {status} {body}")
+        logger.warning("Admin DELETE failed: status=%s url=%s body=%s", status, api_url, body[:800] if body else "")
+        return _admin_api_error_response("DELETE", status, api_url, body, user)
 
     return redirect(f"/?user={urllib.parse.quote(user)}&mode=admin")
 
