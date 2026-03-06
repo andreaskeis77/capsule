@@ -23,6 +23,7 @@ from src import settings
 from src import category_map as cm
 from src.dashboard_category_view import build_dashboard_category_view
 from src.dashboard_request_state import parse_dashboard_request_state
+from src.dashboard_item_view import enrich_item_for_display, enrich_items_for_display
 from src.db_schema import ensure_schema
 
 # Ensure DB schema exists (best-effort; tests rely on ensure_schema)
@@ -246,20 +247,6 @@ def _admin_api_error_response(action: str, status: int, url: str, body: str, use
     return make_response(html, http_status)
 
 
-def _decorate_item(item: Dict[str, object]) -> Dict[str, object]:
-    raw_cat = item.get("category")
-    name = item.get("name")
-    internal = cm.infer_internal_category(raw_cat, name=name)
-    item["category_key"] = internal
-    item["category_label"] = cm.display_category_label(raw_cat, name=name)
-    item["category_group"] = cm.category_group_for_internal(internal)
-    item["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
-    item["category_is_unknown"] = bool(item["category_raw"]) and internal is None
-    item["category_mapped_from_raw"] = bool(item["category_raw"]) and (internal is not None) and (item["category_raw"] != internal)
-    item["all_images"] = _load_images_for_item(item.get("image_path"))
-    item["primary_image"] = item["all_images"][0] if item["all_images"] else None
-    return item
-
 
 @app.route("/")
 def index():
@@ -291,9 +278,7 @@ def index():
     ).fetchall()
     conn.close()
 
-    items_all: List[Dict[str, object]] = []
-    for r in rows_base:
-        items_all.append(_decorate_item(dict(r)))
+    items_all = enrich_items_for_display((dict(r) for r in rows_base), _load_images_for_item)
 
     category_view = build_dashboard_category_view(
         items_all,
@@ -338,7 +323,7 @@ def item_detail(item_id: int):
     if not row:
         abort(404)
 
-    item = _decorate_item(dict(row))
+    item = enrich_item_for_display(dict(row), _load_images_for_item)
     return render_template("item_detail.html", user_id=user, item=item)
 
 
@@ -357,7 +342,7 @@ def admin_edit_item(item_id: int):
     if not row:
         abort(404)
 
-    item = _decorate_item(dict(row))
+    item = enrich_item_for_display(dict(row), _load_images_for_item)
     return render_template(
         "admin_item_edit.html",
         user_id=user,
