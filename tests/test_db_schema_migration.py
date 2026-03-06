@@ -1,4 +1,4 @@
-﻿# FILE: tests/test_db_schema_migration.py
+# FILE: tests/test_db_schema_migration.py
 import os
 import sqlite3
 from pathlib import Path

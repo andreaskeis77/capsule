@@ -1,4 +1,4 @@
-﻿# ENGINEERING_GUIDELINES â€“ Wardrobe Studio (AI-assisted Engineering)
+# ENGINEERING_GUIDELINES â€“ Wardrobe Studio (AI-assisted Engineering)
 
 Stand: 2026-02-15  
 Scope: Dieses Dokument definiert verbindlich, wie wir am Repo arbeiten, damit Ã„nderungen reproduzierbar, Ã¼berprÃ¼fbar und chat-Ã¼bergreifend stabil bleiben.

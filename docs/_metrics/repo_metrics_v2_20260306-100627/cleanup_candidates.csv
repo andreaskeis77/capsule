@@ -1,0 +1,30 @@
+path,role,language,tracked,code_lines,doc_lines,churn,risk_score,priority,reasons,recommendation
+src/api_v2.py,application,Python,True,929,0,1946,83.77,high,high-churn; high-function-complexity; large-production-file,review
+src/ontology_runtime.py,application,Python,True,385,0,465,83.08,high,high-churn; high-function-complexity,review
+src/ingest_wardrobe.py,application,Python,True,565,0,1106,79.6,high,high-churn; high-function-complexity; large-production-file,review
+src/web_dashboard.py,application,Python,True,464,0,1125,75.8,high,high-churn; high-function-complexity,review
+src/category_map.py,application,Python,True,273,0,364,63.34,high,high-churn; high-function-complexity,review
+tools/project_audit_dump.py,tooling,Python,True,350,0,446,56.47,high,high-churn; high-function-complexity,review
+src/run_registry.py,application,Python,True,311,0,407,55.81,high,high-churn; high-function-complexity,review
+tools/secret_scan.py,tooling,Python,True,230,0,288,45.29,high,high-churn,review
+templates/index.html,template,HTML,True,369,0,686,40.55,high,high-churn,review
+tools/ingest_recover.py,tooling,Python,True,145,0,184,40.38,high,high-function-complexity,review
+tools/ontology_runtime_dump.py,tooling,Python,True,214,0,263,38.1,high,high-churn,review
+tools/handoff_make.py,tooling,Python,True,167,0,204,36.06,high,high-function-complexity,review
+src/db_schema.py,application,Python,True,154,0,285,34.6,high,high-churn,review
+src/web_dashboard.py.bak,application,BAK,True,212,0,262,31.69,high,tracked-backup-file; high-churn,remove-from-repo
+src/api_main.py,application,Python,True,157,0,320,29.36,high,high-churn,review
+tests/test_api_v2_crud.py,test,Python,True,169,0,417,26.86,high,high-function-complexity,review
+templates/admin_item_edit.html,template,HTML,True,167,0,444,26.71,high,high-churn,review
+templates/item_detail.html,template,HTML,True,128,0,338,19.56,high,high-churn,review
+wardrobe_export.json,data,JSON,True,903,0,903,0.0,high,tracked-generated-data; tracked-non-core-artifact,move-or-ignore
+PROJECT_HANDOFF_WardrobeStudio_2026-01-29.md,documentation,Markdown,True,0,201,276,1.04,medium,tracked-non-core-artifact,review
+WORKLOG_OntologyValidation_SoftMode.md,documentation,Markdown,True,0,173,230,0.87,medium,tracked-non-core-artifact,review
+ANALYSE_Ontologie_und_Code_Verbesserungen.md,documentation,Markdown,True,0,175,219,0.82,medium,tracked-non-core-artifact,review
+KNOWLEDGE_CapsuleWardrobeArchitect_v6.md,documentation,Markdown,True,0,96,134,0.5,medium,tracked-non-core-artifact,review
+BEDIENUNGSANLEITUNG Karens Wardrobe.txt,documentation,Text,True,0,21,34,0.13,medium,tracked-non-core-artifact,review
+Dateistruktur1.jpg,asset,JPG,True,0,0,0,0.0,medium,tracked-non-core-artifact,review
+Dateistruktur2.jpg,asset,JPG,True,0,0,0,0.0,medium,tracked-non-core-artifact,review
+beispiel bild capsuale wardrobe.png,asset,PNG,True,0,0,0,0.0,medium,tracked-non-core-artifact,review
+requirements.txt,documentation,Text,True,0,29,0,0.0,medium,tracked-non-core-artifact,review
+test.png,asset,PNG,True,0,0,0,0.0,medium,tracked-non-core-artifact,review

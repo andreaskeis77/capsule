@@ -1,4 +1,4 @@
-﻿# FILE: tests/test_dashboard_index_filters.py
+# FILE: tests/test_dashboard_index_filters.py
 from __future__ import annotations
 
 import sqlite3

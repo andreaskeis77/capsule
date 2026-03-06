@@ -1,4 +1,4 @@
-﻿# FILE: src/web_dashboard.py
+# FILE: src/web_dashboard.py
 from __future__ import annotations
 
 import html as html_lib

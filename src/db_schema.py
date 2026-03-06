@@ -1,4 +1,4 @@
-﻿# FILE: src/db_schema.py
+# FILE: src/db_schema.py
 from __future__ import annotations
 
 import logging

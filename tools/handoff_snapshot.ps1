@@ -1,4 +1,4 @@
-﻿# tools/handoff_snapshot.ps1
+# tools/handoff_snapshot.ps1
 # PowerShell 5.1 compatible snapshot generator
 [CmdletBinding()]
 param(

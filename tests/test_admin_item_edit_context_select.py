@@ -1,4 +1,4 @@
-﻿# FILE: tests/test_admin_item_edit_context_select.py
+# FILE: tests/test_admin_item_edit_context_select.py
 from __future__ import annotations
 
 import re

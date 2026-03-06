@@ -1,0 +1,9 @@
+scope,file_count,tracked_files,code_lines,doc_lines,comment_lines,binary_files,total_churn,avg_risk_score,avg_hotspot_score,test_to_prod_code_ratio,docs_to_prod_code_ratio,comment_density
+all_scanned,1548,97,125272,100424,808,786,20722,1.22,368.83,,,
+docs_only,487,24,0,100424,0,1,6929,0.04,2.28,,,
+engineering_core,95,65,12965,0,497,0,13555,17.88,5990.76,,,
+git_visible,99,97,11312,6134,464,4,20668,14.97,5756.68,,,
+production_core,57,46,11081,0,427,0,12012,21.98,9293.5,0.17,9.0627,0.0371
+tests_only,38,19,1884,0,70,0,1543,11.73,1036.66,,,
+tracked_only,97,97,8663,6134,344,4,20668,14.28,5874.08,,,
+workspace_noise,1455,4,116609,94290,464,786,54,0.34,0.8,,,

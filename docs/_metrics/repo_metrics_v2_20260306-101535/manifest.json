@@ -1,0 +1,21 @@
+{
+  "out_dir": "C:\\CapsuleWardrobeRAG\\docs\\_metrics\\repo_metrics_v2_20260306-101535",
+  "generated_at": "2026-03-06T09:15:46+00:00",
+  "artifacts": [
+    "repo_metrics_v2.json",
+    "REPORT_v2.md",
+    "PHASE0_ACTIONS.md",
+    "files.csv",
+    "functions.csv",
+    "languages.csv",
+    "roles.csv",
+    "directories.csv",
+    "scopes.csv",
+    "hotspots.csv",
+    "risky_files.csv",
+    "duplicates_exact.csv",
+    "duplicates_shadow.csv",
+    "issues.csv",
+    "cleanup_candidates.csv"
+  ]
+}
