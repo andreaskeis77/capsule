@@ -430,8 +430,7 @@ def api_get_inventory():
     except Exception:
         pass
 
-    conn = sqlite3.connect(str(settings.DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection()
     try:
         items = fetch_legacy_inventory_items(conn, user)
     finally:
