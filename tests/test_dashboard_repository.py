@@ -1,39 +1,63 @@
+from __future__ import annotations
+
 import sqlite3
 
 from src.dashboard_repository import (
-    DASHBOARD_ITEM_COLUMNS,
-    LEGACY_INVENTORY_COLUMNS,
-    get_item_by_id,
-    list_dashboard_items_for_user,
-    list_legacy_inventory_for_user,
+    fetch_dashboard_index_rows,
+    fetch_item_row_by_id,
+    fetch_legacy_inventory_items,
+    get_table_columns,
 )
 
 
-def _make_conn() -> sqlite3.Connection:
+
+def _make_conn(with_full_schema: bool = True) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
-        CREATE TABLE items (
-            id INTEGER PRIMARY KEY,
-            user_id TEXT,
-            name TEXT,
-            brand TEXT,
-            category TEXT,
-            color_primary TEXT,
-            color_variant TEXT,
-            needs_review INTEGER,
-            context TEXT,
-            size TEXT,
-            notes TEXT,
-            image_path TEXT
+    if with_full_schema:
+        conn.execute(
+            """
+            CREATE TABLE items (
+                id INTEGER PRIMARY KEY,
+                user_id TEXT,
+                name TEXT,
+                brand TEXT,
+                category TEXT,
+                color_primary TEXT,
+                color_variant TEXT,
+                needs_review INTEGER,
+                context TEXT,
+                size TEXT,
+                notes TEXT,
+                image_path TEXT
+            )
+            """
         )
-        """
-    )
+    else:
+        conn.execute(
+            """
+            CREATE TABLE items (
+                id INTEGER PRIMARY KEY,
+                user_id TEXT,
+                name TEXT,
+                category TEXT
+            )
+            """
+        )
     return conn
 
 
-def test_list_dashboard_items_for_user_returns_expected_projection_in_desc_order():
+
+def test_get_table_columns_reads_schema_names():
+    conn = _make_conn()
+    cols = get_table_columns(conn)
+    assert "id" in cols
+    assert "user_id" in cols
+    assert "image_path" in cols
+
+
+
+def test_fetch_dashboard_index_rows_orders_desc_for_user():
     conn = _make_conn()
     conn.executemany(
         """
@@ -43,22 +67,19 @@ def test_list_dashboard_items_for_user_returns_expected_projection_in_desc_order
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            (1, "karen", "A", "B1", "cat_blouses", "blue", "navy", 0, "business", "40", "n1", "img/a"),
-            (2, "karen", "C", "B2", "cat_jackets", "black", "", 1, "private", "42", "n2", "img/c"),
-            (3, "other", "D", "B3", "cat_coats", "red", "", 0, "private", "44", "n3", "img/d"),
+            (1, "karen", "A", "", "cat_blouses", "blue", "", 0, "office", "40", "", "a"),
+            (2, "other", "B", "", "cat_blouses", "blue", "", 0, "office", "40", "", "b"),
+            (3, "karen", "C", "", "cat_jackets", "black", "", 1, "casual", "42", "", "c"),
         ],
     )
-    conn.commit()
 
-    rows = list_dashboard_items_for_user(conn, "karen")
-
-    assert [r["id"] for r in rows] == [2, 1]
-    assert set(rows[0].keys()) == set(DASHBOARD_ITEM_COLUMNS)
+    rows = fetch_dashboard_index_rows(conn, "karen")
+    assert [row["id"] for row in rows] == [3, 1]
     assert rows[0]["name"] == "C"
 
 
 
-def test_get_item_by_id_returns_full_row_dict_or_none():
+def test_fetch_item_row_by_id_returns_row_or_none():
     conn = _make_conn()
     conn.execute(
         """
@@ -67,48 +88,31 @@ def test_get_item_by_id_returns_full_row_dict_or_none():
             needs_review, context, size, notes, image_path
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (7, "karen", "Poncho", "Brand", "poncho", "beige", "", 1, "private", "L", "x", "img/p"),
+        (7, "karen", "Cape", "", "poncho", "red", "", 0, "casual", "L", "", "img/7"),
     )
-    conn.commit()
 
-    found = get_item_by_id(conn, 7)
-    missing = get_item_by_id(conn, 999)
-
-    assert found is not None
-    assert found["name"] == "Poncho"
-    assert found["category"] == "poncho"
-    assert missing is None
+    row = fetch_item_row_by_id(conn, 7)
+    assert row is not None
+    assert row["name"] == "Cape"
+    assert fetch_item_row_by_id(conn, 999) is None
 
 
 
-def test_list_legacy_inventory_for_user_fills_missing_columns_with_null_aliases():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
-        CREATE TABLE items (
-            id INTEGER PRIMARY KEY,
-            user_id TEXT,
-            name TEXT,
-            category TEXT,
-            notes TEXT
-        )
-        """
+def test_fetch_legacy_inventory_items_backfills_missing_columns_with_null():
+    conn = _make_conn(with_full_schema=False)
+    conn.executemany(
+        "INSERT INTO items (id, user_id, name, category) VALUES (?, ?, ?, ?)",
+        [
+            (1, "karen", "Bluse", "cat_blouses"),
+            (2, "other", "Jacke", "cat_jackets"),
+        ],
     )
-    conn.execute(
-        "INSERT INTO items (id, user_id, name, category, notes) VALUES (?, ?, ?, ?, ?)",
-        (1, "karen", "Minimal", "cat_knitwear", "hello"),
-    )
-    conn.commit()
 
-    rows = list_legacy_inventory_for_user(conn, "karen")
-
-    assert len(rows) == 1
-    row = rows[0]
-    assert set(row.keys()) == set(LEGACY_INVENTORY_COLUMNS)
-    assert row["id"] == 1
-    assert row["name"] == "Minimal"
-    assert row["category"] == "cat_knitwear"
-    assert row["notes"] == "hello"
-    assert row["color_primary"] is None
-    assert row["image_path"] is None
+    items = fetch_legacy_inventory_items(conn, "karen")
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == 1
+    assert item["name"] == "Bluse"
+    assert item["category"] == "cat_blouses"
+    assert item["color_primary"] is None
+    assert item["image_path"] is None
