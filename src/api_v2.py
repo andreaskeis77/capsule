@@ -17,6 +17,14 @@ from PIL import Image
 
 from src import settings
 from src.api_item_mutation import build_create_item_plan, build_update_item_plan, require_non_empty_update
+from src.api_item_storage import (
+    cleanup_trashed_image_dir,
+    create_image_folder_for_item,
+    move_image_folder_for_item,
+    move_item_image_dir_to_trash,
+    rollback_moved_image_dir,
+    rollback_trashed_image_dir,
+)
 from src.api_payload_utils import PayloadShape, normalize_bool_flag
 from src.error_contract import error_class_for_status
 from src.ontology_runtime import OntologyManager, NormalizationResult
@@ -30,22 +38,8 @@ VALID_CONTEXTS = {"private", "executive"}  # wardrobe usage context
 
 API_V2_ITEM_MUTATION_SHAPE = PayloadShape(
     allowed_fields=(
-        "user_id",
-        "name",
-        "brand",
-        "category",
-        "color_primary",
-        "color_variant",
-        "needs_review",
-        "material_main",
-        "fit",
-        "collar",
-        "price",
-        "vision_description",
-        "image_path",
-        "context",
-        "size",
-        "notes",
+        "user_id", "name", "brand", "category", "color_primary", "color_variant", "needs_review",
+        "material_main", "fit", "collar", "price", "vision_description", "image_path", "context", "size", "notes",
     ),
     required_fields=("user_id", "name"),
     normalizers={"needs_review": normalize_bool_flag},
@@ -712,7 +706,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
     cur = conn.cursor()
 
     item_id: Optional[int] = None
-    abs_dir: Optional[Path] = None
+    created_image = None
 
     try:
         cur.execute(
@@ -721,15 +715,9 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         )
         item_id = int(cur.lastrowid)
 
-        slug = _slugify(payload.name)
-        rel_dir = Path(payload.user_id) / f"{slug}_{item_id}"
-        abs_dir = settings.IMG_DIR / rel_dir
-        abs_dir.mkdir(parents=True, exist_ok=True)
+        created_image = create_image_folder_for_item(settings.IMG_DIR, payload.user_id, payload.name, item_id, jpg_bytes)
 
-        main_path = abs_dir / "main.jpg"
-        main_path.write_bytes(jpg_bytes)
-
-        cur.execute("UPDATE items SET image_path = ? WHERE id = ?", (str(rel_dir).replace("\\", "/"), item_id))
+        cur.execute("UPDATE items SET image_path = ? WHERE id = ?", (created_image.rel_path, item_id))
         conn.commit()
 
         logger.info(
@@ -738,7 +726,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
                 "request_id": rid,
                 "event": "item.create.ok",
                 "item_id": item_id,
-                "image_path": str(rel_dir).replace("\\", "/"),
+                "image_path": created_image.rel_path,
             },
         )
 
@@ -753,8 +741,8 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
             pass
 
         try:
-            if abs_dir is not None and abs_dir.exists():
-                _rmtree_robust(abs_dir, ignore_errors=True)
+            if created_image is not None and created_image.abs_dir.exists():
+                shutil.rmtree(created_image.abs_dir, ignore_errors=True)
         except Exception:
             logger.exception("Create cleanup failed", extra={"request_id": rid, "event": "item.create.cleanup"})
 
@@ -931,9 +919,7 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
         updates["collar"], _ = _ontology_apply("collar", updates["collar"], rid)
 
     old_rel = existing["image_path"]
-    moved = False
-    moved_src: Optional[Path] = None
-    moved_dst: Optional[Path] = None
+    move_result = None
 
     if old_rel and ("name" in updates or "user_id" in updates):
         old_user = existing["user_id"]
@@ -946,51 +932,28 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
             conn.close()
             _raise(400, rid, "InvalidUser", field="user_id", value=new_user)
 
-        new_slug = _slugify(new_name)
-        new_rel = str(Path(new_user) / f"{new_slug}_{old_id}").replace("\\", "/")
-
-        src_dir = settings.IMG_DIR / Path(old_rel)
-        dst_dir = settings.IMG_DIR / Path(new_rel)
-
         try:
-            if src_dir.exists():
-                dst_dir.parent.mkdir(parents=True, exist_ok=True)
-                if not _safe_under(settings.IMG_DIR, src_dir) or not _safe_under(settings.IMG_DIR, dst_dir):
-                    raise RuntimeError("Jail check failed for rename/move")
-                if src_dir.resolve() != dst_dir.resolve():
-                    if dst_dir.exists():
-                        logger.warning(
-                            "Folder move skipped (destination exists)",
-                            extra={"request_id": rid, "event": "item.update.move_skipped", "src": old_rel, "dst": new_rel},
-                        )
-                    else:
-                        try:
-                            src_dir.rename(dst_dir)
-                        except Exception:
-                            shutil.move(str(src_dir), str(dst_dir))
-                        moved = True
-                        moved_src = src_dir
-                        moved_dst = dst_dir
-                        updates["image_path"] = new_rel
-                        logger.info(
-                            "Moved image folder",
-                            extra={"request_id": rid, "event": "item.update.move_ok", "src": old_rel, "dst": new_rel, "item_id": item_id},
-                        )
+            move_result = move_image_folder_for_item(settings.IMG_DIR, old_rel, new_user, new_name, old_id)
+            if move_result.conflict:
+                logger.warning(
+                    "Folder move skipped (destination exists)",
+                    extra={"request_id": rid, "event": "item.update.move_skipped", "src": old_rel, "dst": move_result.new_rel},
+                )
+            elif move_result.moved:
+                updates["image_path"] = move_result.new_rel
+                logger.info(
+                    "Moved image folder",
+                    extra={"request_id": rid, "event": "item.update.move_ok", "src": old_rel, "dst": move_result.new_rel, "item_id": item_id},
+                )
         except Exception:
             logger.exception(
                 "Folder move failed (continuing metadata update)",
                 extra={"request_id": rid, "event": "item.update.move_failed", "item_id": item_id},
             )
             updates.pop("image_path", None)
-            moved = False
-            moved_src = None
-            moved_dst = None
+            move_result = None
 
-    update_plan = build_update_item_plan(
-        updates,
-        shape=API_V2_ITEM_MUTATION_SHAPE,
-        immutable_fields=(),
-    )
+    update_plan = build_update_item_plan(updates, shape=API_V2_ITEM_MUTATION_SHAPE, immutable_fields=())
     try:
         require_non_empty_update(update_plan)
     except ValueError:
@@ -1007,14 +970,9 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
     except Exception as e:
         conn.rollback()
 
-        if moved and moved_src and moved_dst and moved_dst.exists():
+        if move_result and move_result.moved:
             try:
-                moved_src.parent.mkdir(parents=True, exist_ok=True)
-                if not moved_src.exists():
-                    try:
-                        moved_dst.rename(moved_src)
-                    except Exception:
-                        shutil.move(str(moved_dst), str(moved_src))
+                rollback_moved_image_dir(move_result)
                 logger.warning(
                     "Rolled back folder move after DB failure",
                     extra={"request_id": rid, "event": "item.update.move_rollback", "item_id": item_id},
@@ -1069,32 +1027,22 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
         _raise(404, rid, "NotFound", item_id=item_id)
 
     image_path = (row["image_path"] or "").strip()
-    src_dir: Optional[Path] = (settings.IMG_DIR / Path(image_path)) if image_path else None
-    trashed_dir: Optional[Path] = None
+    trash_result = None
 
     try:
-        if src_dir and src_dir.exists():
-            if not _safe_under(settings.IMG_DIR, src_dir):
-                _raise(400, rid, "JailCheckFailed", stage="fs", op="items.delete")
-
-            rel = Path(image_path)
-            if rel.is_absolute() or ".." in rel.parts:
-                _raise(400, rid, "JailCheckFailed", stage="fs", op="items.delete")
-
-            base_trash = settings.TRASH_DIR
-            base_trash.mkdir(parents=True, exist_ok=True)
-
-            candidate = base_trash / rel
-            if candidate.exists():
-                candidate = base_trash / rel.parent / f"{rel.name}__deleted__{item_id}__{rid[:8]}"
-
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-
-            if not _safe_under(base_trash, candidate):
-                _raise(400, rid, "JailCheckFailed", stage="fs", op="items.delete")
-
-            src_dir.rename(candidate)
-            trashed_dir = candidate
+        if image_path:
+            try:
+                trash_result = move_item_image_dir_to_trash(
+                    settings.IMG_DIR,
+                    settings.TRASH_DIR,
+                    image_path,
+                    item_id,
+                    rid,
+                )
+            except RuntimeError as e:
+                if str(e) == "JailCheckFailed":
+                    _raise(400, rid, "JailCheckFailed", stage="fs", op="items.delete")
+                raise
 
         cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
         conn.commit()
@@ -1105,10 +1053,9 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
         )
 
     except HTTPException:
-        if trashed_dir and src_dir and trashed_dir.exists():
+        if trash_result and trash_result.moved:
             try:
-                src_dir.parent.mkdir(parents=True, exist_ok=True)
-                trashed_dir.rename(src_dir)
+                rollback_trashed_image_dir(trash_result)
             except Exception:
                 logger.exception(
                     "Rollback move failed after HTTPException",
@@ -1117,10 +1064,9 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
         raise
     except Exception as e:
         conn.rollback()
-        if trashed_dir and src_dir and trashed_dir.exists():
+        if trash_result and trash_result.moved:
             try:
-                src_dir.parent.mkdir(parents=True, exist_ok=True)
-                trashed_dir.rename(src_dir)
+                rollback_trashed_image_dir(trash_result)
             except Exception:
                 logger.exception(
                     "Rollback move failed after DeleteFailed",
@@ -1135,9 +1081,9 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
     finally:
         conn.close()
 
-    if trashed_dir and trashed_dir.exists():
+    if trash_result and trash_result.moved:
         try:
-            _rmtree_robust(trashed_dir, ignore_errors=True)
+            cleanup_trashed_image_dir(trash_result)
         except Exception:
             logger.exception(
                 "Trash cleanup failed (best effort)",
