@@ -33,6 +33,16 @@ from src.api_item_storage import (
     rollback_moved_image_dir,
     rollback_trashed_image_dir,
 )
+from src.api_item_query import (
+    count_review_rows,
+    fetch_item_image_ref_by_id,
+    fetch_item_row_by_id,
+    item_row_to_payload,
+    item_summary_row_to_payload,
+    list_item_summary_rows,
+    list_review_rows,
+    review_row_to_payload,
+)
 from src.api_payload_utils import PayloadShape, normalize_bool_flag
 from src.error_contract import error_class_for_status
 from src.ontology_runtime import OntologyManager, NormalizationResult
@@ -476,34 +486,7 @@ def health():
 
 
 def _row_to_item(row: sqlite3.Row, base_url: str) -> ItemResponse:
-    image_path = row["image_path"] if "image_path" in row.keys() else None
-    urls: List[str] = []
-    main_url = None
-    if image_path:
-        main_url = f"{base_url}/images/{image_path}/main.jpg"
-        urls = [main_url]
-    return ItemResponse(
-        id=row["id"],
-        user_id=row["user_id"],
-        name=row["name"],
-        brand=row["brand"],
-        category=row["category"],
-        color_primary=row["color_primary"],
-        color_variant=row["color_variant"] if "color_variant" in row.keys() else None,
-        needs_review=int(row["needs_review"]) if "needs_review" in row.keys() and row["needs_review"] is not None else 0,
-        material_main=row["material_main"],
-        fit=row["fit"],
-        collar=row["collar"],
-        price=row["price"],
-        vision_description=row["vision_description"],
-        image_path=image_path,
-        created_at=row["created_at"],
-        context=row["context"] if "context" in row.keys() else None,
-        size=row["size"] if "size" in row.keys() else None,
-        notes=row["notes"] if "notes" in row.keys() else None,
-        main_image_url=main_url,
-        image_urls=urls,
-    )
+    return ItemResponse(**item_row_to_payload(row, base_url))
 
 
 @router.get("/items", response_model=ListItemsResponse, dependencies=[Depends(require_api_key)])
@@ -743,9 +726,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
 
     try:
         conn2 = db_conn()
-        cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-        row = cur2.fetchone()
+        row = fetch_item_row_by_id(conn2, item_id)
         conn2.close()
     except Exception as e:
         _handle_db_exc(e, rid, op="items.create.fetch", default_error="CreateFailed")
@@ -828,8 +809,7 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
     conn = db_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-        existing = cur.fetchone()
+        existing = fetch_item_row_by_id(conn, item_id)
     except Exception as e:
         conn.close()
         _handle_db_exc(e, rid, op="items.update.load", default_error="UpdateFailed")
@@ -940,9 +920,7 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
 
     try:
         conn2 = db_conn()
-        cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-        row = cur2.fetchone()
+        row = fetch_item_row_by_id(conn2, item_id)
         conn2.close()
     except Exception as e:
         _handle_db_exc(e, rid, op="items.update.fetch", default_error="UpdateFailed")
@@ -962,8 +940,7 @@ def delete_item(request: Request, item_id: int) -> DeleteResponse:
     conn = db_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT id, image_path FROM items WHERE id = ?", (item_id,))
-        row = cur.fetchone()
+        row = fetch_item_image_ref_by_id(conn, item_id)
     except Exception as e:
         conn.close()
         _handle_db_exc(e, rid, op="items.delete.load", default_error="DeleteFailed")
