@@ -41,8 +41,8 @@ from src.api_item_query import (
     item_summary_row_to_payload,
     list_item_summary_rows,
     list_review_rows,
-    review_row_to_payload,
 )
+from src.api_item_review import build_review_items
 from src.api_payload_utils import PayloadShape, normalize_bool_flag
 from src.error_contract import error_class_for_status
 from src.ontology_runtime import OntologyManager, NormalizationResult
@@ -497,17 +497,7 @@ def list_items(request: Request, user: str) -> ListItemsResponse:
 
     try:
         conn = db_conn()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, name, category, color_primary, color_variant, needs_review, context
-            FROM items
-            WHERE user_id = ?
-            ORDER BY id DESC
-            """,
-            (user,),
-        )
-        rows = cur.fetchall()
+        rows = list_item_summary_rows(conn, user)
     except Exception as e:
         _handle_db_exc(e, rid, op="items.list", default_error="ListFailed")
         raise
@@ -517,18 +507,7 @@ def list_items(request: Request, user: str) -> ListItemsResponse:
         except Exception:
             pass
 
-    items = [
-        ItemSummary(
-            id=r["id"],
-            name=r["name"],
-            category=r["category"],
-            color_primary=r["color_primary"],
-            color_variant=r["color_variant"],
-            needs_review=int(r["needs_review"] or 0),
-            context=r["context"],
-        )
-        for r in rows
-    ]
+    items = [ItemSummary(**item_summary_row_to_payload(r)) for r in rows]
     return ListItemsResponse(user=user, items=items)
 
 
@@ -545,22 +524,8 @@ def review_queue(
 
     try:
         conn = db_conn()
-        cur = conn.cursor()
-
-        cur.execute("SELECT COUNT(*) AS cnt FROM items WHERE user_id = ? AND needs_review = 1", (user,))
-        total = int(cur.fetchone()["cnt"])
-
-        cur.execute(
-            """
-            SELECT id, name, category, color_primary, color_variant, needs_review
-            FROM items
-            WHERE user_id = ? AND needs_review = 1
-            ORDER BY id DESC
-            LIMIT ? OFFSET ?
-            """,
-            (user, limit, offset),
-        )
-        rows = cur.fetchall()
+        total = count_review_rows(conn, user)
+        rows = list_review_rows(conn, user, limit, offset)
     except Exception as e:
         _handle_db_exc(e, rid, op="items.review_queue", default_error="ReviewQueueFailed")
         raise
@@ -570,31 +535,8 @@ def review_queue(
         except Exception:
             pass
 
-    items: List[ReviewItem] = []
-    for r in rows:
-        variant = r["color_variant"]
-        suggestions: List[str] = []
-        if ONTOLOGY is not None and variant:
-            try:
-                nr = ONTOLOGY.normalize_field("color_primary", variant)
-                suggestions = [s.canonical for s in (nr.suggestions or [])]
-            except Exception:
-                logger.exception(
-                    "Ontology suggestion failed",
-                    extra={"request_id": rid, "event": "ontology.suggest_failed", "value": variant},
-                )
-        items.append(
-            ReviewItem(
-                id=r["id"],
-                name=r["name"],
-                category=r["category"],
-                color_primary=r["color_primary"],
-                color_variant=variant,
-                needs_review=int(r["needs_review"] or 0),
-                suggestions=suggestions,
-            )
-        )
-
+    payloads = build_review_items(rows, ontology=ONTOLOGY, request_id=rid, logger=logger)
+    items = [ReviewItem(**payload) for payload in payloads]
     return ReviewQueueResponse(user=user, total=total, items=items)
 
 
@@ -603,9 +545,7 @@ def get_item(request: Request, item_id: int) -> ItemResponse:
     rid = _request_id(request)
     try:
         conn = db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-        row = cur.fetchone()
+        row = fetch_item_row_by_id(conn, item_id)
     except Exception as e:
         _handle_db_exc(e, rid, op="items.get", default_error="GetFailed")
         raise
