@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from PIL import Image
 
 from src import settings
+from src.api_item_mutation import build_create_item_plan, build_update_item_plan, require_non_empty_update
+from src.api_payload_utils import PayloadShape, normalize_bool_flag
 from src.error_contract import error_class_for_status
 from src.ontology_runtime import OntologyManager, NormalizationResult
 
@@ -25,6 +27,29 @@ router = APIRouter(prefix="/api/v2")
 ONTOLOGY: Optional[OntologyManager] = None
 VALID_USERS = {"andreas", "karen"}
 VALID_CONTEXTS = {"private", "executive"}  # wardrobe usage context
+
+API_V2_ITEM_MUTATION_SHAPE = PayloadShape(
+    allowed_fields=(
+        "user_id",
+        "name",
+        "brand",
+        "category",
+        "color_primary",
+        "color_variant",
+        "needs_review",
+        "material_main",
+        "fit",
+        "collar",
+        "price",
+        "vision_description",
+        "image_path",
+        "context",
+        "size",
+        "notes",
+    ),
+    required_fields=("user_id", "name"),
+    normalizers={"needs_review": normalize_bool_flag},
+)
 
 
 # -------------------------
@@ -639,6 +664,23 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
     if payload.collar:
         canonical_collar, _ = _ontology_apply("collar", payload.collar, rid)
 
+    create_plan = build_create_item_plan(
+        payload.model_dump(),
+        extra_data={
+            "category": canonical_category,
+            "color_primary": canonical_color,
+            "color_variant": derived_variant,
+            "needs_review": derived_review,
+            "material_main": canonical_material,
+            "fit": canonical_fit,
+            "collar": canonical_collar,
+            "context": ctx,
+        },
+        shape=API_V2_ITEM_MUTATION_SHAPE,
+    )
+    if not create_plan.is_valid:
+        _raise(400, rid, "InvalidPayload", fields=list(create_plan.missing_required))
+
     logger.info(
         "Create normalization",
         extra={
@@ -674,33 +716,8 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
 
     try:
         cur.execute(
-            """
-            INSERT INTO items (
-                user_id, name, brand, category,
-                color_primary, color_variant, needs_review,
-                material_main, fit, collar,
-                price, vision_description,
-                context, size, notes
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                payload.user_id,
-                payload.name,
-                payload.brand,
-                canonical_category,
-                canonical_color,
-                derived_variant,
-                derived_review,
-                canonical_material,
-                canonical_fit,
-                canonical_collar,
-                payload.price,
-                payload.vision_description,
-                ctx,
-                payload.size,
-                payload.notes,
-            ),
+            f"INSERT INTO items ({create_plan.insert_columns_sql()}) VALUES ({create_plan.insert_placeholders_sql()})",
+            create_plan.ordered_params(),
         )
         item_id = int(cur.lastrowid)
 
@@ -874,15 +891,12 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
         conn.close()
         _raise(400, rid, "NoFields")
 
-    # validate + normalize context if present
     if "context" in updates:
         updates["context"] = _validate_context(updates.get("context"), rid)
 
-    # normalize needs_review if present
     if "needs_review" in updates and updates["needs_review"] is not None:
         updates["needs_review"] = int(updates["needs_review"])
 
-    # --- Color logic (normalize + derive review/variant) ---
     if "color_primary" in updates:
         raw_color = updates.get("color_primary")
         explicit_variant = updates.get("color_variant")
@@ -907,7 +921,6 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
             },
         )
 
-    # --- Other ontology fields (hard fail) ---
     if "category" in updates and updates["category"] is not None:
         updates["category"], _ = _ontology_apply("category", updates["category"], rid)
     if "material_main" in updates and updates["material_main"] is not None:
@@ -917,7 +930,6 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
     if "collar" in updates and updates["collar"] is not None:
         updates["collar"], _ = _ontology_apply("collar", updates["collar"], rid)
 
-    # --- Optional folder rename/move on name/user change (SAGA SAFE) ---
     old_rel = existing["image_path"]
     moved = False
     moved_src: Optional[Path] = None
@@ -974,38 +986,19 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
             moved_src = None
             moved_dst = None
 
-    allowed = {
-        "user_id",
-        "name",
-        "brand",
-        "category",
-        "color_primary",
-        "color_variant",
-        "needs_review",
-        "material_main",
-        "fit",
-        "collar",
-        "price",
-        "vision_description",
-        "image_path",
-        "context",
-        "size",
-        "notes",
-    }
-
-    set_cols = []
-    params: List[Any] = []
-    for k, v in updates.items():
-        if k in allowed:
-            set_cols.append(f"{k} = ?")
-            params.append(v)
-
-    if not set_cols:
+    update_plan = build_update_item_plan(
+        updates,
+        shape=API_V2_ITEM_MUTATION_SHAPE,
+        immutable_fields=(),
+    )
+    try:
+        require_non_empty_update(update_plan)
+    except ValueError:
         conn.close()
         _raise(400, rid, "NoValidFields")
 
-    params.append(item_id)
-    sql = f"UPDATE items SET {', '.join(set_cols)} WHERE id = ?"
+    sql = f"UPDATE items SET {update_plan.update_assignment_sql()} WHERE id = ?"
+    params = [*update_plan.ordered_params(), item_id]
 
     try:
         cur.execute(sql, params)

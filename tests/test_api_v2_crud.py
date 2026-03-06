@@ -161,6 +161,22 @@ def test_create_update_delete(client):
     assert (folder_new / "main.jpg").exists()
     assert not folder_old.exists()
 
+    # Move across user roots is still supported by the current API contract.
+    r_user = client.patch(
+        f"/api/v2/items/{item_id}",
+        json={"user_id": "andreas"},
+        headers={"X-API-Key": "testkey"},
+    )
+    assert r_user.status_code == 200, r_user.text
+    moved_user = r_user.json()
+    assert moved_user["user_id"] == "andreas"
+    assert moved_user["image_path"].startswith("andreas/")
+
+    folder_user = img_dir / Path(moved_user["image_path"])
+    assert folder_user.exists()
+    assert (folder_user / "main.jpg").exists()
+    assert not folder_new.exists()
+
     # Another metadata update
     r2 = client.patch(
         f"/api/v2/items/{item_id}",
@@ -171,12 +187,13 @@ def test_create_update_delete(client):
     updated = r2.json()
     assert updated["brand"] == "Adidas"
     assert updated["size"] == "50"
+    assert updated["user_id"] == "andreas"
 
     r3 = client.delete(f"/api/v2/items/{item_id}", headers={"X-API-Key": "testkey"})
     assert r3.status_code == 200, r3.text
     assert r3.json()["deleted"] is True
 
-    assert not folder_new.exists()
+    assert not folder_user.exists()
 
     conn = sqlite3.connect(os.environ["WARDROBE_DB_PATH"])
     conn.row_factory = sqlite3.Row
