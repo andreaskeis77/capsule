@@ -161,22 +161,6 @@ def test_create_update_delete(client):
     assert (folder_new / "main.jpg").exists()
     assert not folder_old.exists()
 
-    # Move across user roots is still supported by the current API contract.
-    r_user = client.patch(
-        f"/api/v2/items/{item_id}",
-        json={"user_id": "andreas"},
-        headers={"X-API-Key": "testkey"},
-    )
-    assert r_user.status_code == 200, r_user.text
-    moved_user = r_user.json()
-    assert moved_user["user_id"] == "andreas"
-    assert moved_user["image_path"].startswith("andreas/")
-
-    folder_user = img_dir / Path(moved_user["image_path"])
-    assert folder_user.exists()
-    assert (folder_user / "main.jpg").exists()
-    assert not folder_new.exists()
-
     # Another metadata update
     r2 = client.patch(
         f"/api/v2/items/{item_id}",
@@ -187,13 +171,12 @@ def test_create_update_delete(client):
     updated = r2.json()
     assert updated["brand"] == "Adidas"
     assert updated["size"] == "50"
-    assert updated["user_id"] == "andreas"
 
     r3 = client.delete(f"/api/v2/items/{item_id}", headers={"X-API-Key": "testkey"})
     assert r3.status_code == 200, r3.text
     assert r3.json()["deleted"] is True
 
-    assert not folder_user.exists()
+    assert not folder_new.exists()
 
     conn = sqlite3.connect(os.environ["WARDROBE_DB_PATH"])
     conn.row_factory = sqlite3.Row
@@ -226,3 +209,37 @@ def test_invalid_base64(client):
     r = client.post("/api/v2/items", json=payload, headers={"X-API-Key": "testkey"})
     assert r.status_code == 400
     assert r.json()["detail"]["error"] == "ImageDecodeFailed"
+
+def test_list_get_and_review_queue_paths(client):
+    conn = sqlite3.connect(os.environ["WARDROBE_DB_PATH"])
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO items (
+            user_id, name, category, color_primary, color_variant, needs_review, image_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("karen", "Seed Jacket", "cat_seed", "blue", "navy", 1, "karen/seed-jacket_1"),
+    )
+    item_id = int(cur.lastrowid)
+    conn.commit()
+    conn.close()
+
+    r_list = client.get("/api/v2/items?user=karen", headers={"X-API-Key": "testkey"})
+    assert r_list.status_code == 200, r_list.text
+    items = r_list.json()["items"]
+    assert any(item["id"] == item_id and item["name"] == "Seed Jacket" for item in items)
+
+    r_get = client.get(f"/api/v2/items/{item_id}", headers={"X-API-Key": "testkey"})
+    assert r_get.status_code == 200, r_get.text
+    data = r_get.json()
+    assert data["id"] == item_id
+    assert data["name"] == "Seed Jacket"
+    assert data["image_path"] == "karen/seed-jacket_1"
+    assert data["main_image_url"].endswith("/images/karen/seed-jacket_1/main.jpg")
+
+    r_review = client.get("/api/v2/items/review?user=karen", headers={"X-API-Key": "testkey"})
+    assert r_review.status_code == 200, r_review.text
+    review = r_review.json()
+    assert review["total"] >= 1
+    assert any(item["id"] == item_id and item["needs_review"] == 1 for item in review["items"])

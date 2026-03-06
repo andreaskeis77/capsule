@@ -16,19 +16,10 @@ from pydantic import BaseModel, Field
 from PIL import Image
 
 from src import settings
-from src.api_item_mutation import build_create_item_plan, build_update_item_plan, require_non_empty_update
-from src.api_item_validation import (
-    ImageDecodeFailure,
-    ImageNormalizeFailure,
-    ImageTooLargeFailure,
-    normalize_create_like_fields,
-    normalize_update_fields,
-    prepare_uploaded_image,
-)
+from src.api_item_validation import ImageDecodeFailure, ImageNormalizeFailure, ImageTooLargeFailure
 from src.api_item_storage import (
     cleanup_trashed_image_dir,
     create_image_folder_for_item,
-    move_image_folder_for_item,
     move_item_image_dir_to_trash,
     rollback_moved_image_dir,
     rollback_trashed_image_dir,
@@ -544,8 +535,7 @@ def review_queue(
         except Exception:
             pass
 
-    payloads = build_review_items(rows, ontology=ONTOLOGY, request_id=rid, logger=logger)
-    items = [ReviewItem(**payload) for payload in payloads]
+    items = [ReviewItem(**payload) for payload in build_review_items(rows, ontology=ONTOLOGY, request_id=rid, logger=logger)]
     return ReviewQueueResponse(user=user, total=total, items=items)
 
 
@@ -579,7 +569,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         prepared = prepare_create_item_request(
             payload.model_dump(),
             rid,
-            valid_users=tuple(VALID_USERS),
+            valid_users=tuple(sorted(VALID_USERS)),
             shape=API_V2_ITEM_MUTATION_SHAPE,
             ontology_apply=_ontology_apply,
             validate_context=_validate_context,
@@ -626,13 +616,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         )
         item_id = int(cur.lastrowid)
 
-        created_image = create_image_folder_for_item(
-            settings.IMG_DIR,
-            payload.user_id,
-            payload.name,
-            item_id,
-            prepared.prepared_image.jpg_bytes,
-        )
+        created_image = create_image_folder_for_item(settings.IMG_DIR, payload.user_id, payload.name, item_id, prepared.prepared_image.jpg_bytes)
 
         cur.execute("UPDATE items SET image_path = ? WHERE id = ?", (created_image.rel_path, item_id))
         conn.commit()
@@ -695,7 +679,7 @@ def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any
         prepared = prepare_create_item_request(
             payload.model_dump(),
             rid,
-            valid_users=tuple(VALID_USERS),
+            valid_users=tuple(sorted(VALID_USERS)),
             shape=API_V2_ITEM_MUTATION_SHAPE,
             ontology_apply=_ontology_apply,
             validate_context=_validate_context,
@@ -749,7 +733,7 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
             existing,
             payload.model_dump(exclude_unset=True),
             rid,
-            valid_users=tuple(VALID_USERS),
+            valid_users=tuple(sorted(VALID_USERS)),
             shape=API_V2_ITEM_MUTATION_SHAPE,
             img_dir=settings.IMG_DIR,
             ontology_apply=_ontology_apply,
@@ -760,12 +744,12 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
     except NoFieldsError:
         conn.close()
         _raise(400, rid, "NoFields")
-    except InvalidUserValueError as exc:
-        conn.close()
-        _raise(400, rid, "InvalidUser", field="user_id", value=exc.user_id)
     except NoValidFieldsError:
         conn.close()
         _raise(400, rid, "NoValidFields")
+    except InvalidUserValueError as exc:
+        conn.close()
+        _raise(400, rid, "InvalidUser", field="user_id", value=exc.user_id)
 
     if "color_primary" in prepared.updates:
         logger.info(
