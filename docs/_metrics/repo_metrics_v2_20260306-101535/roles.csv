@@ -1,9 +1,0 @@
-key,file_count,size_bytes,code_lines,comment_lines,blank_lines,doc_lines,total_lines,avg_risk_score,avg_hotspot_score,total_churn,tracked_files,binary_files
-application,22,163152,3816,190,832,0,4838,32.99,18406.36,6892,22,0
-tooling,13,76542,1765,109,365,0,2239,28.08,6450.83,2239,13,0
-test,19,38979,942,35,254,0,1231,10.55,1974.31,1543,19,0
-template,3,29352,664,4,92,0,760,28.79,2884.43,1468,3,0
-config,6,5194,204,0,30,0,234,3.06,83.58,248,6,0
-other,4,8951,157,6,21,0,184,0.85,52.76,184,4,0
-asset,4,2750943,0,0,0,0,0,0.0,0.15,0,4,4
-documentation,24,284648,0,0,814,6134,6948,0.94,43.46,6929,24,0

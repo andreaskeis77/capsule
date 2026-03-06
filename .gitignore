@@ -70,3 +70,7 @@ _release_staging/
 .pytest_cache/
 **/__pycache__/
 
+
+# generated metrics artifacts
+docs/_metrics/
+
