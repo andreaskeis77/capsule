@@ -1,4 +1,3 @@
-# FILE: src/web_dashboard.py
 from __future__ import annotations
 
 import html as html_lib
@@ -21,8 +20,10 @@ from flask import (
 )
 
 from src import settings
-from src.db_schema import ensure_schema
 from src import category_map as cm
+from src.dashboard_category_view import build_dashboard_category_view
+from src.dashboard_request_state import parse_dashboard_request_state
+from src.db_schema import ensure_schema
 
 # Ensure DB schema exists (best-effort; tests rely on ensure_schema)
 ensure_schema()
@@ -31,7 +32,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("WardrobeAPI")
 
 BASE_DIR = settings.BASE_DIR  # repo root as Path
-
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 flask_app = app
 
@@ -78,7 +78,6 @@ def _parse_ids_param(raw: Optional[str], limit: int = 500) -> List[int]:
     parts = [p.strip() for p in raw.split(",")]
     out: List[int] = []
     seen = set()
-
     for p in parts:
         if not p:
             continue
@@ -94,7 +93,6 @@ def _parse_ids_param(raw: Optional[str], limit: int = 500) -> List[int]:
         out.append(n)
         if len(out) >= limit:
             break
-
     return out
 
 
@@ -105,7 +103,6 @@ def _load_images_for_item(image_path: Optional[str]) -> List[str]:
     rel = _safe_str(image_path)
     if not rel:
         return []
-
     abs_dir = settings.IMG_DIR / Path(rel)
     if not abs_dir.is_dir():
         return []
@@ -120,7 +117,10 @@ def _load_images_for_item(image_path: Optional[str]) -> List[str]:
 
     # stable order: main first, then others
     files.sort(key=lambda x: (0 if x.lower().startswith("main") else 1, x.lower()))
-    return [f"/images/{urllib.parse.quote(rel)}/{urllib.parse.quote(fn)}" for fn in files]
+    return [
+        f"/images/{urllib.parse.quote(rel)}/{urllib.parse.quote(fn)}"
+        for fn in files
+    ]
 
 
 def _is_local_request() -> bool:
@@ -166,20 +166,20 @@ def _require_api_key() -> None:
 def _http_request(method: str, url: str, json_body: Optional[Dict] = None) -> Tuple[int, str]:
     """
     Minimal HTTP client (stdlib) for calling our own API v2 from admin routes.
-    Returns (status_code, body_text). IMPORTANT: preserves HTTPError status + response body.
+    Returns (status_code, body_text).
+
+    IMPORTANT: preserves HTTPError status + response body.
     """
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     data = None
     headers = _api_headers().copy()
-
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
     req = urllib.request.Request(url=url, data=data, method=method, headers=headers)
-
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read() or b""
@@ -188,7 +188,6 @@ def _http_request(method: str, url: str, json_body: Optional[Dict] = None) -> Tu
             except Exception:
                 body = str(raw)
             return int(resp.getcode()), body
-
     except urllib.error.HTTPError as e:
         # Preserve status + read body (this was previously swallowed -> status 0)
         try:
@@ -199,15 +198,12 @@ def _http_request(method: str, url: str, json_body: Optional[Dict] = None) -> Tu
             body = raw.decode("utf-8", errors="replace")
         except Exception:
             body = str(raw)
-
         status = int(getattr(e, "code", 0) or 0)
         if not body:
             body = str(e)
         return status, body
-
     except urllib.error.URLError as e:
         return 0, f"URLError: {getattr(e, 'reason', e)}"
-
     except Exception as e:
         return 0, str(e)
 
@@ -231,55 +227,38 @@ def _admin_api_error_response(action: str, status: int, url: str, body: str, use
     Shows the real API response (pretty JSON if possible).
     """
     http_status = status if 400 <= status <= 599 else 502
-
     pretty = _pretty_json(body) or (body or "").strip() or "(no body)"
+
     # avoid huge pages
     if len(pretty) > 12000:
         pretty = pretty[:12000] + "\n…(truncated)…"
 
     back_url = f"/?user={urllib.parse.quote(user)}&mode=admin"
-
-    html = f"""<!doctype html>
-<html lang="de">
-<head>
-  <meta charset="utf-8">
-  <title>Admin API Error</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }}
-    .card {{ max-width: 1100px; margin: 0 auto; border: 1px solid #e6e6e6; border-radius: 12px; padding: 18px; }}
-    .h1 {{ font-size: 22px; margin: 0 0 8px 0; }}
-    .muted {{ color: #666; }}
-    pre {{ background: #0b1020; color: #e8e8e8; padding: 14px; border-radius: 10px; overflow: auto; }}
-    a {{ color: #0b57d0; text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .row {{ display: flex; gap: 16px; flex-wrap: wrap; }}
-    .pill {{ display:inline-block; padding: 4px 10px; border-radius: 999px; border:1px solid #ddd; background:#fafafa; font-size: 12px; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="h1">Admin-Speichern fehlgeschlagen</div>
-    <div class="muted">
-      <span class="pill">action: {html_lib.escape(action)}</span>
-      <span class="pill">status: {http_status}</span>
-    </div>
-    <div class="muted" style="margin-top:10px;">
-      URL: <span style="font-family: ui-monospace, Menlo, Consolas, monospace;">{html_lib.escape(url)}</span>
-    </div>
-
-    <h3 style="margin:16px 0 8px 0;">API Response</h3>
+    html = f"""
+    <h1>Admin API Error</h1>
+    <p><strong>Admin-Speichern fehlgeschlagen</strong></p>
+    <p>action: {html_lib.escape(action)}<br>status: {http_status}</p>
+    <p><strong>URL:</strong> {html_lib.escape(url)}</p>
+    <h3>API Response</h3>
     <pre>{html_lib.escape(pretty)}</pre>
-
-    <div class="row" style="margin-top: 14px;">
-      <a href="{html_lib.escape(back_url)}">← Zur Admin-Übersicht</a>
-      <a href="javascript:history.back()">← Zurück</a>
-    </div>
-  </div>
-</body>
-</html>"""
-
+    <p><a href=\"{back_url}\">← Zur Admin-Übersicht</a></p>
+    """
     return make_response(html, http_status)
+
+
+def _decorate_item(item: Dict[str, object]) -> Dict[str, object]:
+    raw_cat = item.get("category")
+    name = item.get("name")
+    internal = cm.infer_internal_category(raw_cat, name=name)
+    item["category_key"] = internal
+    item["category_label"] = cm.display_category_label(raw_cat, name=name)
+    item["category_group"] = cm.category_group_for_internal(internal)
+    item["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
+    item["category_is_unknown"] = bool(item["category_raw"]) and internal is None
+    item["category_mapped_from_raw"] = bool(item["category_raw"]) and (internal is not None) and (item["category_raw"] != internal)
+    item["all_images"] = _load_images_for_item(item.get("image_path"))
+    item["primary_image"] = item["all_images"][0] if item["all_images"] else None
+    return item
 
 
 @app.route("/")
@@ -291,132 +270,57 @@ def index():
     - optional selection mode (?mode=select&ids=1,2,3)
     - admin mode (?mode=admin) is local-only
     """
-    user = request.args.get("user", "karen").strip().lower()
-    mode = request.args.get("mode", "").strip().lower()
-
-    # Base filters
-    ctx = request.args.get("ctx", "").strip().lower()
-    review_raw = request.args.get("review", "").strip().lower()
-    review_only = review_raw in ("1", "true", "yes", "on")
-
-    # New category filter (plus backward compat: accept old ?top=... as alias)
-    cat_raw = request.args.get("cat", "").strip()
-    top_raw = request.args.get("top", "").strip()
-    if not cat_raw and top_raw:
-        cat_raw = top_raw
-    active_cat = cm.normalize_filter_key(cat_raw)  # "" if none/invalid
-
-    ids_raw = request.args.get("ids", "")
-    selection_mode = mode == "select"
-    admin_mode = mode == "admin"
-
-    if admin_mode:
+    state = parse_dashboard_request_state(
+        request.args,
+        parse_ids_param=_parse_ids_param,
+        normalize_filter_key=cm.normalize_filter_key,
+    )
+    if state.admin_mode:
         _require_admin_local()
-
-    selected_ids = _parse_ids_param(ids_raw) if selection_mode else []
 
     conn = get_db_connection()
     rows_base = conn.execute(
         """
-        SELECT
-          id, user_id, name, brand, category,
-          color_primary, color_variant, needs_review,
-          context, size, notes, image_path
+        SELECT id, user_id, name, brand, category, color_primary, color_variant,
+               needs_review, context, size, notes, image_path
         FROM items
         WHERE user_id = ?
         ORDER BY id DESC
         """,
-        (user,),
+        (state.user,),
     ).fetchall()
-
-    items_all: List[Dict] = []
-    for r in rows_base:
-        d = dict(r)
-
-        raw_cat = d.get("category")
-        name = d.get("name")
-
-        internal = cm.infer_internal_category(raw_cat, name=name)
-        d["category_key"] = internal  # internal canonical key or None
-        d["category_label"] = cm.display_category_label(raw_cat, name=name)
-        d["category_group"] = cm.category_group_for_internal(internal)
-        d["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
-        d["category_is_unknown"] = bool(d["category_raw"]) and internal is None
-        d["category_mapped_from_raw"] = bool(d["category_raw"]) and (internal is not None) and (d["category_raw"] != internal)
-
-        d["all_images"] = _load_images_for_item(d.get("image_path"))
-        d["primary_image"] = d["all_images"][0] if d["all_images"] else None
-
-        items_all.append(d)
-
-    # Apply context/review filters first (base filters)
-    items_base = items_all
-
-    if ctx:
-        items_base = [it for it in items_base if (it.get("context") or "").lower() == ctx]
-
-    if review_only:
-        items_base = [it for it in items_base if int(it.get("needs_review") or 0) == 1]
-
-    # Count internal categories (post base filters)
-    internal_counts: Dict[str, int] = {}
-    for it in items_base:
-        k = it.get("category_key")
-        if not k:
-            continue
-        internal_counts[k] = internal_counts.get(k, 0) + 1
-
-    # Compute UI filter counts (including outerwear group)
-    filter_counts: Dict[str, int] = {}
-    for fkey, match_keys in cm.FILTER_MATCH.items():
-        filter_counts[fkey] = sum(internal_counts.get(k, 0) for k in match_keys)
-
-    # Quick chips (only show if present to keep UI clean)
-    quick_filters = [
-        {"key": k, "label": cm.FILTER_LABEL[k], "count": filter_counts.get(k, 0)}
-        for k in cm.QUICK_FILTER_ORDER
-        if filter_counts.get(k, 0) > 0
-    ]
-
-    # Dropdown groups (show all, including 0)
-    filter_dropdown_groups = []
-    for g in cm.GROUP_ORDER:
-        keys = cm.FILTER_GROUPS.get(g, [])
-        opts = [{"key": k, "label": cm.FILTER_LABEL[k], "count": filter_counts.get(k, 0)} for k in keys]
-        filter_dropdown_groups.append({"label": g, "options": opts})
-
-    # Apply category filter
-    if active_cat:
-        match = cm.FILTER_MATCH.get(active_cat, set())
-        items = [it for it in items_base if it.get("category_key") in match]
-    else:
-        items = items_base
-
     conn.close()
 
-    ids_param = ",".join(str(i) for i in selected_ids) if selection_mode else ""
-    active_cat_label = cm.FILTER_LABEL.get(active_cat, "") if active_cat else ""
+    items_all: List[Dict[str, object]] = []
+    for r in rows_base:
+        items_all.append(_decorate_item(dict(r)))
+
+    category_view = build_dashboard_category_view(
+        items_all,
+        ctx=state.ctx,
+        review_only=state.review_only,
+        active_cat=state.active_cat,
+    )
+
+    ids_param = ",".join(str(i) for i in state.selected_ids) if state.selection_mode else ""
 
     return render_template(
         "index.html",
-        user_id=user,
-        items=items,
-        # new category filter vars
-        active_cat=active_cat,
-        active_cat_label=active_cat_label,
-        quick_filters=quick_filters,
-        filter_dropdown_groups=filter_dropdown_groups,
-        # counts + base filters
-        total_count=len(items_base),
-        shown_count=len(items),
+        user_id=state.user,
+        items=category_view.items,
+        active_cat=category_view.active_cat,
+        active_cat_label=category_view.active_cat_label,
+        quick_filters=category_view.quick_filters,
+        filter_dropdown_groups=category_view.filter_dropdown_groups,
+        total_count=len(category_view.items_base),
+        shown_count=len(category_view.items),
         base_count=len(items_all),
-        active_ctx=ctx,
-        review_only=review_only,
-        # selection/admin modes
-        selection_mode=selection_mode,
-        selected_ids=selected_ids,
+        active_ctx=state.ctx,
+        review_only=state.review_only,
+        selection_mode=state.selection_mode,
+        selected_ids=state.selected_ids,
         ids_param=ids_param,
-        admin_mode=admin_mode,
+        admin_mode=state.admin_mode,
     )
 
 
@@ -431,26 +335,10 @@ def item_detail(item_id: int):
     conn = get_db_connection()
     row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
     conn.close()
-
     if not row:
         abort(404)
 
-    item = dict(row)
-
-    raw_cat = item.get("category")
-    name = item.get("name")
-    internal = cm.infer_internal_category(raw_cat, name=name)
-
-    item["category_key"] = internal
-    item["category_label"] = cm.display_category_label(raw_cat, name=name)
-    item["category_group"] = cm.category_group_for_internal(internal)
-    item["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
-    item["category_is_unknown"] = bool(item["category_raw"]) and internal is None
-    item["category_mapped_from_raw"] = bool(item["category_raw"]) and (internal is not None) and (item["category_raw"] != internal)
-
-    item["all_images"] = _load_images_for_item(item.get("image_path"))
-    item["primary_image"] = item["all_images"][0] if item["all_images"] else None
-
+    item = _decorate_item(dict(row))
     return render_template("item_detail.html", user_id=user, item=item)
 
 
@@ -461,7 +349,6 @@ def item_detail(item_id: int):
 @app.route("/admin/item/<int:item_id>", methods=["GET"])
 def admin_edit_item(item_id: int):
     _require_admin_local()
-
     user = request.args.get("user", "karen").strip().lower()
 
     conn = get_db_connection()
@@ -470,22 +357,7 @@ def admin_edit_item(item_id: int):
     if not row:
         abort(404)
 
-    item = dict(row)
-
-    raw_cat = item.get("category")
-    name = item.get("name")
-    internal = cm.infer_internal_category(raw_cat, name=name)
-
-    item["category_key"] = internal
-    item["category_label"] = cm.display_category_label(raw_cat, name=name)
-    item["category_group"] = cm.category_group_for_internal(internal)
-    item["category_raw"] = (raw_cat or "").strip() if raw_cat is not None else ""
-    item["category_is_unknown"] = bool(item["category_raw"]) and internal is None
-    item["category_mapped_from_raw"] = bool(item["category_raw"]) and (internal is not None) and (item["category_raw"] != internal)
-
-    item["all_images"] = _load_images_for_item(item.get("image_path"))
-    item["primary_image"] = item["all_images"][0] if item["all_images"] else None
-
+    item = _decorate_item(dict(row))
     return render_template(
         "admin_item_edit.html",
         user_id=user,
@@ -530,11 +402,14 @@ def admin_save_item(item_id: int):
 
     api_url = f"{_api_base_url()}/api/v2/items/{item_id}"
     status, body = _http_request("PATCH", api_url, json_body=payload)
-
     if status not in (200, 204):
-        logger.warning("Admin PATCH failed: status=%s url=%s body=%s", status, api_url, body[:800] if body else "")
+        logger.warning(
+            "Admin PATCH failed: status=%s url=%s body=%s",
+            status,
+            api_url,
+            body[:800] if body else "",
+        )
         return _admin_api_error_response("PATCH", status, api_url, body, user)
-
     return redirect(f"/?user={urllib.parse.quote(user)}&mode=admin")
 
 
@@ -545,15 +420,19 @@ def admin_delete_item(item_id: int):
 
     api_url = f"{_api_base_url()}/api/v2/items/{item_id}"
     status, body = _http_request("DELETE", api_url, json_body=None)
-
     if status not in (200, 204):
-        logger.warning("Admin DELETE failed: status=%s url=%s body=%s", status, api_url, body[:800] if body else "")
+        logger.warning(
+            "Admin DELETE failed: status=%s url=%s body=%s",
+            status,
+            api_url,
+            body[:800] if body else "",
+        )
         return _admin_api_error_response("DELETE", status, api_url, body, user)
-
     return redirect(f"/?user={urllib.parse.quote(user)}&mode=admin")
 
 
 # --- GPT API ENDPOINTS (Legacy, keep for compatibility; protected via X-API-Key) ---
+
 @app.route("/api/v1/inventory", methods=["GET"])
 def api_get_inventory():
     _require_api_key()
@@ -591,7 +470,6 @@ def api_get_inventory():
         items = [dict(row) for row in rows]
     finally:
         conn.close()
-
     return jsonify({"user": user, "items": items})
 
 
