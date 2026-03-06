@@ -43,6 +43,15 @@ from src.api_item_query import (
     list_review_rows,
 )
 from src.api_item_review import build_review_items
+from src.api_item_workflows import (
+    InvalidPayloadFieldsError,
+    InvalidUserValueError,
+    NoFieldsError,
+    NoValidFieldsError,
+    build_validation_preview,
+    prepare_create_item_request,
+    prepare_update_item_request,
+)
 from src.api_payload_utils import PayloadShape, normalize_bool_flag
 from src.error_contract import error_class_for_status
 from src.ontology_runtime import OntologyManager, NormalizationResult
@@ -565,43 +574,24 @@ def get_item(request: Request, item_id: int) -> ItemResponse:
 @router.post("/items", response_model=ItemResponse, dependencies=[Depends(require_api_key)])
 def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
     rid = _request_id(request)
-    _require_valid_user(payload.user_id, rid)
-
-    normalized_fields = normalize_create_like_fields(
-        payload.model_dump(),
-        rid,
-        ontology_apply=_ontology_apply,
-        validate_context=_validate_context,
-        derive_color_variant_and_review=_derive_color_variant_and_review,
-    )
-
-    create_plan = build_create_item_plan(
-        payload.model_dump(),
-        extra_data=normalized_fields.as_extra_data(),
-        shape=API_V2_ITEM_MUTATION_SHAPE,
-    )
-    if not create_plan.is_valid:
-        _raise(400, rid, "InvalidPayload", fields=list(create_plan.missing_required))
-
-    logger.info(
-        "Create normalization",
-        extra={
-            "request_id": rid,
-            "event": "item.create.normalize",
-            "color_primary": normalized_fields.color_primary,
-            "color_variant": normalized_fields.color_variant,
-            "needs_review": normalized_fields.needs_review,
-            "context": normalized_fields.context,
-        },
-    )
 
     try:
-        prepared_image = prepare_uploaded_image(
-            payload.image_main_base64,
-            max_bytes=settings.MAX_IMAGE_BYTES,
+        prepared = prepare_create_item_request(
+            payload.model_dump(),
+            rid,
+            valid_users=tuple(VALID_USERS),
+            shape=API_V2_ITEM_MUTATION_SHAPE,
+            ontology_apply=_ontology_apply,
+            validate_context=_validate_context,
+            derive_color_variant_and_review=_derive_color_variant_and_review,
             decode_image=_decode_image_base64,
             normalize_image_to_jpg=_normalize_image_to_jpg,
+            max_image_bytes=settings.MAX_IMAGE_BYTES,
         )
+    except InvalidUserValueError as exc:
+        _raise(400, rid, "InvalidUser", field="user_id", value=exc.user_id)
+    except InvalidPayloadFieldsError as exc:
+        _raise(400, rid, "InvalidPayload", fields=list(exc.missing_fields))
     except ImageDecodeFailure:
         logger.exception("Image base64 decode failed", extra={"request_id": rid, "event": "item.create.image_decode"})
         _raise(400, rid, "ImageDecodeFailed", stage="base64")
@@ -611,6 +601,18 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         logger.exception("Image normalize failed", extra={"request_id": rid, "event": "item.create.image_normalize"})
         _raise(400, rid, "ImageDecodeFailed", stage="image")
 
+    logger.info(
+        "Create normalization",
+        extra={
+            "request_id": rid,
+            "event": "item.create.normalize",
+            "color_primary": prepared.normalized_fields.color_primary,
+            "color_variant": prepared.normalized_fields.color_variant,
+            "needs_review": prepared.normalized_fields.needs_review,
+            "context": prepared.normalized_fields.context,
+        },
+    )
+
     conn = db_conn()
     cur = conn.cursor()
 
@@ -619,12 +621,18 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
 
     try:
         cur.execute(
-            f"INSERT INTO items ({create_plan.insert_columns_sql()}) VALUES ({create_plan.insert_placeholders_sql()})",
-            create_plan.ordered_params(),
+            f"INSERT INTO items ({prepared.create_plan.insert_columns_sql()}) VALUES ({prepared.create_plan.insert_placeholders_sql()})",
+            prepared.create_plan.ordered_params(),
         )
         item_id = int(cur.lastrowid)
 
-        created_image = create_image_folder_for_item(settings.IMG_DIR, payload.user_id, payload.name, item_id, prepared_image.jpg_bytes)
+        created_image = create_image_folder_for_item(
+            settings.IMG_DIR,
+            payload.user_id,
+            payload.name,
+            item_id,
+            prepared.prepared_image.jpg_bytes,
+        )
 
         cur.execute("UPDATE items SET image_path = ? WHERE id = ?", (created_image.rel_path, item_id))
         conn.commit()
@@ -682,23 +690,24 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
 @router.post("/items/validate", dependencies=[Depends(require_api_key)])
 def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any]:
     rid = _request_id(request)
-    _require_valid_user(payload.user_id, rid)
-
-    normalized_fields = normalize_create_like_fields(
-        payload.model_dump(),
-        rid,
-        ontology_apply=_ontology_apply,
-        validate_context=_validate_context,
-        derive_color_variant_and_review=_derive_color_variant_and_review,
-    )
 
     try:
-        prepared_image = prepare_uploaded_image(
-            payload.image_main_base64,
-            max_bytes=settings.MAX_IMAGE_BYTES,
+        prepared = prepare_create_item_request(
+            payload.model_dump(),
+            rid,
+            valid_users=tuple(VALID_USERS),
+            shape=API_V2_ITEM_MUTATION_SHAPE,
+            ontology_apply=_ontology_apply,
+            validate_context=_validate_context,
+            derive_color_variant_and_review=_derive_color_variant_and_review,
             decode_image=_decode_image_base64,
             normalize_image_to_jpg=_normalize_image_to_jpg,
+            max_image_bytes=settings.MAX_IMAGE_BYTES,
         )
+    except InvalidUserValueError as exc:
+        _raise(400, rid, "InvalidUser", field="user_id", value=exc.user_id)
+    except InvalidPayloadFieldsError as exc:
+        _raise(400, rid, "InvalidPayload", fields=list(exc.missing_fields))
     except ImageDecodeFailure:
         logger.exception("Validate image base64 decode failed", extra={"request_id": rid, "event": "item.validate.image_decode"})
         _raise(400, rid, "ImageDecodeFailed", stage="base64")
@@ -708,38 +717,14 @@ def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any
         logger.exception("Validate image normalize failed", extra={"request_id": rid, "event": "item.validate.image_normalize"})
         _raise(400, rid, "ImageDecodeFailed", stage="image")
 
-    slug = _slugify(payload.name)
-    example_rel = str(Path(payload.user_id) / f"{slug}_NEW").replace("\\", "/")
-
-    return {
-        "ok": True,
-        "request_id": rid,
-        "example_image_path": example_rel,
-        "normalized_fields": {
-            "user_id": payload.user_id,
-            "name": payload.name,
-            "brand": payload.brand,
-            "category": normalized_fields.category,
-            "color_primary": normalized_fields.color_primary,
-            "color_variant": normalized_fields.color_variant,
-            "needs_review": int(normalized_fields.needs_review),
-            "material_main": normalized_fields.material_main,
-            "fit": normalized_fields.fit,
-            "collar": normalized_fields.collar,
-            "price": payload.price,
-            "vision_description": payload.vision_description,
-            "context": normalized_fields.context,
-            "size": payload.size,
-            "notes": payload.notes,
-        },
-        "normalized_image": {
-            "stored_ext": "jpg",
-            "bytes": len(prepared_image.jpg_bytes),
-            "width": prepared_image.width,
-            "height": prepared_image.height,
-            "max_dim": settings.IMAGE_MAX_DIM,
-        },
-    }
+    return build_validation_preview(
+        payload.model_dump(),
+        rid,
+        normalized_fields=prepared.normalized_fields,
+        prepared_image=prepared.prepared_image,
+        slugify=_slugify,
+        image_max_dim=settings.IMAGE_MAX_DIM,
+    )
 
 
 @router.patch("/items/{item_id}", response_model=ItemResponse, dependencies=[Depends(require_api_key)])
@@ -759,76 +744,44 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
         conn.close()
         _raise(404, rid, "NotFound", item_id=item_id)
 
-    updates: Dict[str, Any] = payload.model_dump(exclude_unset=True)
-    if not updates:
+    try:
+        prepared = prepare_update_item_request(
+            existing,
+            payload.model_dump(exclude_unset=True),
+            rid,
+            valid_users=tuple(VALID_USERS),
+            shape=API_V2_ITEM_MUTATION_SHAPE,
+            img_dir=settings.IMG_DIR,
+            ontology_apply=_ontology_apply,
+            validate_context=_validate_context,
+            derive_color_variant_and_review=_derive_color_variant_and_review,
+            logger=logger,
+        )
+    except NoFieldsError:
         conn.close()
         _raise(400, rid, "NoFields")
+    except InvalidUserValueError as exc:
+        conn.close()
+        _raise(400, rid, "InvalidUser", field="user_id", value=exc.user_id)
+    except NoValidFieldsError:
+        conn.close()
+        _raise(400, rid, "NoValidFields")
 
-    updates = normalize_update_fields(
-        updates,
-        rid,
-        ontology_apply=_ontology_apply,
-        validate_context=_validate_context,
-        derive_color_variant_and_review=_derive_color_variant_and_review,
-    )
-
-    if "color_primary" in updates:
+    if "color_primary" in prepared.updates:
         logger.info(
             "Update color",
             extra={
                 "request_id": rid,
                 "event": "item.update.color",
                 "item_id": item_id,
-                "color_primary": updates.get("color_primary"),
-                "color_variant": updates.get("color_variant"),
-                "needs_review": updates.get("needs_review"),
+                "color_primary": prepared.updates.get("color_primary"),
+                "color_variant": prepared.updates.get("color_variant"),
+                "needs_review": prepared.updates.get("needs_review"),
             },
         )
 
-    old_rel = existing["image_path"]
-    move_result = None
-
-    if old_rel and ("name" in updates or "user_id" in updates):
-        old_user = existing["user_id"]
-        old_name = existing["name"]
-        old_id = existing["id"]
-
-        new_user = updates.get("user_id", old_user)
-        new_name = updates.get("name", old_name)
-        if new_user not in VALID_USERS:
-            conn.close()
-            _raise(400, rid, "InvalidUser", field="user_id", value=new_user)
-
-        try:
-            move_result = move_image_folder_for_item(settings.IMG_DIR, old_rel, new_user, new_name, old_id)
-            if move_result.conflict:
-                logger.warning(
-                    "Folder move skipped (destination exists)",
-                    extra={"request_id": rid, "event": "item.update.move_skipped", "src": old_rel, "dst": move_result.new_rel},
-                )
-            elif move_result.moved:
-                updates["image_path"] = move_result.new_rel
-                logger.info(
-                    "Moved image folder",
-                    extra={"request_id": rid, "event": "item.update.move_ok", "src": old_rel, "dst": move_result.new_rel, "item_id": item_id},
-                )
-        except Exception:
-            logger.exception(
-                "Folder move failed (continuing metadata update)",
-                extra={"request_id": rid, "event": "item.update.move_failed", "item_id": item_id},
-            )
-            updates.pop("image_path", None)
-            move_result = None
-
-    update_plan = build_update_item_plan(updates, shape=API_V2_ITEM_MUTATION_SHAPE, immutable_fields=())
-    try:
-        require_non_empty_update(update_plan)
-    except ValueError:
-        conn.close()
-        _raise(400, rid, "NoValidFields")
-
-    sql = f"UPDATE items SET {update_plan.update_assignment_sql()} WHERE id = ?"
-    params = [*update_plan.ordered_params(), item_id]
+    sql = f"UPDATE items SET {prepared.update_plan.update_assignment_sql()} WHERE id = ?"
+    params = [*prepared.update_plan.ordered_params(), item_id]
 
     try:
         cur.execute(sql, params)
@@ -837,9 +790,9 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
     except Exception as e:
         conn.rollback()
 
-        if move_result and move_result.moved:
+        if prepared.move_result and prepared.move_result.moved:
             try:
-                rollback_moved_image_dir(move_result)
+                rollback_moved_image_dir(prepared.move_result)
                 logger.warning(
                     "Rolled back folder move after DB failure",
                     extra={"request_id": rid, "event": "item.update.move_rollback", "item_id": item_id},
