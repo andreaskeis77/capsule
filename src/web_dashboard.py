@@ -24,6 +24,11 @@ from src import category_map as cm
 from src.dashboard_category_view import build_dashboard_category_view
 from src.dashboard_request_state import parse_dashboard_request_state
 from src.dashboard_item_view import enrich_item_for_display, enrich_items_for_display
+from src.dashboard_repository import (
+    fetch_dashboard_index_rows,
+    fetch_item_row_by_id,
+    fetch_legacy_inventory_items,
+)
 from src.db_schema import ensure_schema
 
 # Ensure DB schema exists (best-effort; tests rely on ensure_schema)
@@ -266,17 +271,10 @@ def index():
         _require_admin_local()
 
     conn = get_db_connection()
-    rows_base = conn.execute(
-        """
-        SELECT id, user_id, name, brand, category, color_primary, color_variant,
-               needs_review, context, size, notes, image_path
-        FROM items
-        WHERE user_id = ?
-        ORDER BY id DESC
-        """,
-        (state.user,),
-    ).fetchall()
-    conn.close()
+    try:
+        rows_base = fetch_dashboard_index_rows(conn, state.user)
+    finally:
+        conn.close()
 
     items_all = enrich_items_for_display((dict(r) for r in rows_base), _load_images_for_item)
 
@@ -318,8 +316,10 @@ def item_detail(item_id: int):
     user = request.args.get("user", "karen").strip().lower()
 
     conn = get_db_connection()
-    row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
-    conn.close()
+    try:
+        row = fetch_item_row_by_id(conn, item_id)
+    finally:
+        conn.close()
     if not row:
         abort(404)
 
@@ -337,8 +337,10 @@ def admin_edit_item(item_id: int):
     user = request.args.get("user", "karen").strip().lower()
 
     conn = get_db_connection()
-    row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
-    conn.close()
+    try:
+        row = fetch_item_row_by_id(conn, item_id)
+    finally:
+        conn.close()
     if not row:
         abort(404)
 
@@ -431,28 +433,7 @@ def api_get_inventory():
     conn = sqlite3.connect(str(settings.DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(items)").fetchall()}
-        want = [
-            "id",
-            "name",
-            "category",
-            "color_primary",
-            "color_variant",
-            "needs_review",
-            "context",
-            "size",
-            "notes",
-            "image_path",
-        ]
-        select = []
-        for col in want:
-            if col in cols:
-                select.append(col)
-            else:
-                select.append(f"NULL AS {col}")
-        sql = "SELECT " + ", ".join(select) + " FROM items WHERE user_id = ?"
-        rows = conn.execute(sql, (user,)).fetchall()
-        items = [dict(row) for row in rows]
+        items = fetch_legacy_inventory_items(conn, user)
     finally:
         conn.close()
     return jsonify({"user": user, "items": items})
@@ -463,8 +444,10 @@ def api_get_item_detail(item_id: int):
     _require_api_key()
     _ensure_db_ready()
     conn = get_db_connection()
-    row = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
-    conn.close()
+    try:
+        row = fetch_item_row_by_id(conn, item_id)
+    finally:
+        conn.close()
     if row:
         return jsonify(dict(row))
     return jsonify({"error": "Not found"}), 404
