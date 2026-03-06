@@ -17,6 +17,14 @@ from PIL import Image
 
 from src import settings
 from src.api_item_mutation import build_create_item_plan, build_update_item_plan, require_non_empty_update
+from src.api_item_validation import (
+    ImageDecodeFailure,
+    ImageNormalizeFailure,
+    ImageTooLargeFailure,
+    normalize_create_like_fields,
+    normalize_update_fields,
+    prepare_uploaded_image,
+)
 from src.api_item_storage import (
     cleanup_trashed_image_dir,
     create_image_folder_for_item,
@@ -636,40 +644,17 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
     rid = _request_id(request)
     _require_valid_user(payload.user_id, rid)
 
-    ctx = _validate_context(payload.context, rid)
-
-    raw_color = payload.color_primary
-    canonical_color, _ = _ontology_apply("color_primary", raw_color, rid)
-    derived_variant, derived_review = _derive_color_variant_and_review(raw_color, canonical_color, payload.color_variant)
-
-    canonical_category = None
-    if payload.category:
-        canonical_category, _ = _ontology_apply("category", payload.category, rid)
-
-    canonical_material = None
-    if payload.material_main:
-        canonical_material, _ = _ontology_apply("material_main", payload.material_main, rid)
-
-    canonical_fit = None
-    if payload.fit:
-        canonical_fit, _ = _ontology_apply("fit", payload.fit, rid)
-
-    canonical_collar = None
-    if payload.collar:
-        canonical_collar, _ = _ontology_apply("collar", payload.collar, rid)
+    normalized_fields = normalize_create_like_fields(
+        payload.model_dump(),
+        rid,
+        ontology_apply=_ontology_apply,
+        validate_context=_validate_context,
+        derive_color_variant_and_review=_derive_color_variant_and_review,
+    )
 
     create_plan = build_create_item_plan(
         payload.model_dump(),
-        extra_data={
-            "category": canonical_category,
-            "color_primary": canonical_color,
-            "color_variant": derived_variant,
-            "needs_review": derived_review,
-            "material_main": canonical_material,
-            "fit": canonical_fit,
-            "collar": canonical_collar,
-            "context": ctx,
-        },
+        extra_data=normalized_fields.as_extra_data(),
         shape=API_V2_ITEM_MUTATION_SHAPE,
     )
     if not create_plan.is_valid:
@@ -680,25 +665,26 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         extra={
             "request_id": rid,
             "event": "item.create.normalize",
-            "color_primary": canonical_color,
-            "color_variant": derived_variant,
-            "needs_review": derived_review,
-            "context": ctx,
+            "color_primary": normalized_fields.color_primary,
+            "color_variant": normalized_fields.color_variant,
+            "needs_review": normalized_fields.needs_review,
+            "context": normalized_fields.context,
         },
     )
 
     try:
-        raw_bytes = _decode_image_base64(payload.image_main_base64)
-    except Exception:
+        prepared_image = prepare_uploaded_image(
+            payload.image_main_base64,
+            max_bytes=settings.MAX_IMAGE_BYTES,
+            decode_image=_decode_image_base64,
+            normalize_image_to_jpg=_normalize_image_to_jpg,
+        )
+    except ImageDecodeFailure:
         logger.exception("Image base64 decode failed", extra={"request_id": rid, "event": "item.create.image_decode"})
         _raise(400, rid, "ImageDecodeFailed", stage="base64")
-
-    if len(raw_bytes) > settings.MAX_IMAGE_BYTES:
-        _raise(413, rid, "ImageTooLarge", stage="image", max_bytes=settings.MAX_IMAGE_BYTES)
-
-    try:
-        jpg_bytes = _normalize_image_to_jpg(raw_bytes)
-    except Exception:
+    except ImageTooLargeFailure as exc:
+        _raise(413, rid, "ImageTooLarge", stage="image", max_bytes=exc.max_bytes)
+    except ImageNormalizeFailure:
         logger.exception("Image normalize failed", extra={"request_id": rid, "event": "item.create.image_normalize"})
         _raise(400, rid, "ImageDecodeFailed", stage="image")
 
@@ -715,7 +701,7 @@ def create_item(request: Request, payload: ItemCreateRequest) -> ItemResponse:
         )
         item_id = int(cur.lastrowid)
 
-        created_image = create_image_folder_for_item(settings.IMG_DIR, payload.user_id, payload.name, item_id, jpg_bytes)
+        created_image = create_image_folder_for_item(settings.IMG_DIR, payload.user_id, payload.name, item_id, prepared_image.jpg_bytes)
 
         cur.execute("UPDATE items SET image_path = ? WHERE id = ?", (created_image.rel_path, item_id))
         conn.commit()
@@ -777,50 +763,29 @@ def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any
     rid = _request_id(request)
     _require_valid_user(payload.user_id, rid)
 
-    ctx = _validate_context(payload.context, rid)
-
-    raw_color = payload.color_primary
-    canonical_color, _ = _ontology_apply("color_primary", raw_color, rid)
-    derived_variant, derived_review = _derive_color_variant_and_review(raw_color, canonical_color, payload.color_variant)
-
-    canonical_category = None
-    if payload.category:
-        canonical_category, _ = _ontology_apply("category", payload.category, rid)
-
-    canonical_material = None
-    if payload.material_main:
-        canonical_material, _ = _ontology_apply("material_main", payload.material_main, rid)
-
-    canonical_fit = None
-    if payload.fit:
-        canonical_fit, _ = _ontology_apply("fit", payload.fit, rid)
-
-    canonical_collar = None
-    if payload.collar:
-        canonical_collar, _ = _ontology_apply("collar", payload.collar, rid)
+    normalized_fields = normalize_create_like_fields(
+        payload.model_dump(),
+        rid,
+        ontology_apply=_ontology_apply,
+        validate_context=_validate_context,
+        derive_color_variant_and_review=_derive_color_variant_and_review,
+    )
 
     try:
-        raw_bytes = _decode_image_base64(payload.image_main_base64)
-    except Exception:
+        prepared_image = prepare_uploaded_image(
+            payload.image_main_base64,
+            max_bytes=settings.MAX_IMAGE_BYTES,
+            decode_image=_decode_image_base64,
+            normalize_image_to_jpg=_normalize_image_to_jpg,
+        )
+    except ImageDecodeFailure:
         logger.exception("Validate image base64 decode failed", extra={"request_id": rid, "event": "item.validate.image_decode"})
         _raise(400, rid, "ImageDecodeFailed", stage="base64")
-
-    if len(raw_bytes) > settings.MAX_IMAGE_BYTES:
-        _raise(413, rid, "ImageTooLarge", stage="image", max_bytes=settings.MAX_IMAGE_BYTES)
-
-    try:
-        jpg_bytes = _normalize_image_to_jpg(raw_bytes)
-    except Exception:
+    except ImageTooLargeFailure as exc:
+        _raise(413, rid, "ImageTooLarge", stage="image", max_bytes=exc.max_bytes)
+    except ImageNormalizeFailure:
         logger.exception("Validate image normalize failed", extra={"request_id": rid, "event": "item.validate.image_normalize"})
         _raise(400, rid, "ImageDecodeFailed", stage="image")
-
-    width = None
-    height = None
-    try:
-        with Image.open(io.BytesIO(jpg_bytes)) as im2:
-            width, height = im2.size
-    except Exception:
-        pass
 
     slug = _slugify(payload.name)
     example_rel = str(Path(payload.user_id) / f"{slug}_NEW").replace("\\", "/")
@@ -833,24 +798,24 @@ def validate_item(request: Request, payload: ItemCreateRequest) -> Dict[str, Any
             "user_id": payload.user_id,
             "name": payload.name,
             "brand": payload.brand,
-            "category": canonical_category,
-            "color_primary": canonical_color,
-            "color_variant": derived_variant,
-            "needs_review": int(derived_review),
-            "material_main": canonical_material,
-            "fit": canonical_fit,
-            "collar": canonical_collar,
+            "category": normalized_fields.category,
+            "color_primary": normalized_fields.color_primary,
+            "color_variant": normalized_fields.color_variant,
+            "needs_review": int(normalized_fields.needs_review),
+            "material_main": normalized_fields.material_main,
+            "fit": normalized_fields.fit,
+            "collar": normalized_fields.collar,
             "price": payload.price,
             "vision_description": payload.vision_description,
-            "context": ctx,
+            "context": normalized_fields.context,
             "size": payload.size,
             "notes": payload.notes,
         },
         "normalized_image": {
             "stored_ext": "jpg",
-            "bytes": len(jpg_bytes),
-            "width": width,
-            "height": height,
+            "bytes": len(prepared_image.jpg_bytes),
+            "width": prepared_image.width,
+            "height": prepared_image.height,
             "max_dim": settings.IMAGE_MAX_DIM,
         },
     }
@@ -879,44 +844,26 @@ def update_item(request: Request, item_id: int, payload: ItemUpdateRequest) -> I
         conn.close()
         _raise(400, rid, "NoFields")
 
-    if "context" in updates:
-        updates["context"] = _validate_context(updates.get("context"), rid)
-
-    if "needs_review" in updates and updates["needs_review"] is not None:
-        updates["needs_review"] = int(updates["needs_review"])
+    updates = normalize_update_fields(
+        updates,
+        rid,
+        ontology_apply=_ontology_apply,
+        validate_context=_validate_context,
+        derive_color_variant_and_review=_derive_color_variant_and_review,
+    )
 
     if "color_primary" in updates:
-        raw_color = updates.get("color_primary")
-        explicit_variant = updates.get("color_variant")
-        canonical_color, _ = _ontology_apply("color_primary", raw_color, rid)
-        updates["color_primary"] = canonical_color
-        derived_variant, derived_review = _derive_color_variant_and_review(raw_color, canonical_color, explicit_variant)
-
-        if "color_variant" not in updates:
-            updates["color_variant"] = derived_variant
-        if "needs_review" not in updates:
-            updates["needs_review"] = derived_review
-
         logger.info(
             "Update color",
             extra={
                 "request_id": rid,
                 "event": "item.update.color",
                 "item_id": item_id,
-                "color_primary": canonical_color,
+                "color_primary": updates.get("color_primary"),
                 "color_variant": updates.get("color_variant"),
                 "needs_review": updates.get("needs_review"),
             },
         )
-
-    if "category" in updates and updates["category"] is not None:
-        updates["category"], _ = _ontology_apply("category", updates["category"], rid)
-    if "material_main" in updates and updates["material_main"] is not None:
-        updates["material_main"], _ = _ontology_apply("material_main", updates["material_main"], rid)
-    if "fit" in updates and updates["fit"] is not None:
-        updates["fit"], _ = _ontology_apply("fit", updates["fit"], rid)
-    if "collar" in updates and updates["collar"] is not None:
-        updates["collar"], _ = _ontology_apply("collar", updates["collar"], rid)
 
     old_rel = existing["image_path"]
     move_result = None
