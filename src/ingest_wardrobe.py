@@ -24,6 +24,14 @@ from typing import Any, Dict, List, Optional
 
 from src import settings
 from src.db_schema import ensure_schema
+from src.ingest_item_db import (
+    claim_pending as _db_claim_pending,
+    connect_db,
+    get_by_fingerprint as _db_get_by_fingerprint,
+    mark_failed as _db_mark_failed,
+    mark_ok as _db_mark_ok,
+    run_with_connection,
+)
 from src.ingest_item_io import (
     VALID_IMAGE_EXTS,
     VALID_TEXT_EXTS,
@@ -120,99 +128,11 @@ def _fake_ai(item_name: str, text_context: str) -> Dict[str, Any]:
 
 
 def _connect_ro() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_db(settings.DB_PATH)
 
 
-def _db_get_by_fingerprint(conn: sqlite3.Connection, user: str, fp: str):
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, ingest_status, image_path FROM items WHERE user_id = ? AND source_fingerprint = ? LIMIT 1",
-        (user, fp),
-    )
-    return cur.fetchone()
-
-
-def _db_claim_pending(conn: sqlite3.Connection, *, user: str, item_name: str, image_path: str, fp: str, run_id: str) -> int:
-    """
-    Claim or reuse an item-row for this fingerprint.
-    Ensures there is a DB record even if we crash mid-ingest.
-    """
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            INSERT INTO items (user_id, name, image_path, source_fingerprint, ingest_status, ingest_run_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (user, item_name, image_path, fp, "pending", run_id),
-        )
-        conn.commit()
-        return int(cur.lastrowid)
-    except sqlite3.IntegrityError:
-        # already exists -> reuse
-        conn.rollback()
-        cur.execute(
-            "SELECT id FROM items WHERE user_id = ? AND source_fingerprint = ? LIMIT 1",
-            (user, fp),
-        )
-        row = cur.fetchone()
-        if not row:
-            raise
-        # set back to pending for retry
-        cur.execute(
-            "UPDATE items SET ingest_status = ?, ingest_run_id = ?, ingest_error = NULL WHERE id = ?",
-            ("pending", run_id, int(row["id"])),
-        )
-        conn.commit()
-        return int(row["id"])
-
-
-def _db_mark_ok(conn: sqlite3.Connection, *, item_id: int, data: Dict[str, Any], run_id: str) -> None:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE items
-        SET name = ?,
-            brand = ?,
-            category = ?,
-            color_primary = ?,
-            material_main = ?,
-            fit = ?,
-            collar = ?,
-            price = ?,
-            vision_description = ?,
-            ingest_status = ?,
-            ingest_run_id = ?,
-            ingest_error = NULL
-        WHERE id = ?
-        """,
-        (
-            data.get("name"),
-            data.get("brand"),
-            data.get("category"),
-            data.get("color_primary"),
-            data.get("material_main"),
-            data.get("fit"),
-            data.get("collar"),
-            data.get("price"),
-            data.get("vision_description"),
-            "ok",
-            run_id,
-            int(item_id),
-        ),
-    )
-    conn.commit()
-
-
-def _db_mark_failed(conn: sqlite3.Connection, *, item_id: int, err: str, run_id: str) -> None:
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE items SET ingest_status = ?, ingest_run_id = ?, ingest_error = ? WHERE id = ?",
-        ("failed", run_id, err[:500], int(item_id)),
-    )
-    conn.commit()
+def _with_write_connection(operation, *args, **kwargs):
+    return run_with_connection(settings.DB_PATH, operation, *args, **kwargs)
 
 
 def _robust_rmtree(path: Path) -> None:
@@ -428,19 +348,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                     # claim pending row (prevents orphan moves)
                     stats.processed += 1
                     try:
-                        conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-                        conn_w.row_factory = sqlite3.Row
-                        try:
-                            item_id = _db_claim_pending(
-                                conn_w,
-                                user=user,
-                                item_name=item_name,
-                                image_path=dest_rel,
-                                fp=fp,
-                                run_id=run.run_id,
-                            )
-                        finally:
-                            conn_w.close()
+                        item_id = _with_write_connection(
+                            _db_claim_pending,
+                            user=user,
+                            item_name=item_name,
+                            image_path=dest_rel,
+                            fp=fp,
+                            run_id=run.run_id,
+                        )
                     except Exception as e:
                         stats.failed += 1
                         run.event("item.claim_failed", level="ERROR", message=str(e), data={"user": user, "item": item_name})
@@ -456,12 +371,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     if not data:
                         stats.failed += 1
                         try:
-                            conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-                            conn_w.row_factory = sqlite3.Row
-                            try:
-                                _db_mark_failed(conn_w, item_id=item_id, err="AnalyzeFailed", run_id=run.run_id)
-                            finally:
-                                conn_w.close()
+                            _with_write_connection(_db_mark_failed, item_id=item_id, err="AnalyzeFailed", run_id=run.run_id)
                         except Exception:
                             pass
                         run.event("item.analyze.failed", level="ERROR", data={"user": user, "item": item_name, "item_id": item_id})
@@ -488,12 +398,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                                 stats.failed += 1
                                 stats.quarantined += 1 if ok_q else 0
                                 try:
-                                    conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-                                    conn_w.row_factory = sqlite3.Row
-                                    try:
-                                        _db_mark_failed(conn_w, item_id=item_id, err="ConflictSrcAndDestExist", run_id=run.run_id)
-                                    finally:
-                                        conn_w.close()
+                                    _with_write_connection(
+                                        _db_mark_failed,
+                                        item_id=item_id,
+                                        err="ConflictSrcAndDestExist",
+                                        run_id=run.run_id,
+                                    )
                                 except Exception:
                                     pass
                                 run.event(
@@ -516,12 +426,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if not item_dir.exists():
                             stats.failed += 1
                             try:
-                                conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-                                conn_w.row_factory = sqlite3.Row
-                                try:
-                                    _db_mark_failed(conn_w, item_id=item_id, err="SourceMissing", run_id=run.run_id)
-                                finally:
-                                    conn_w.close()
+                                _with_write_connection(_db_mark_failed, item_id=item_id, err="SourceMissing", run_id=run.run_id)
                             except Exception:
                                 pass
                             run.event("item.source_missing", level="ERROR", data={"user": user, "item": item_name, "item_id": item_id})
@@ -530,12 +435,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         if not moved_this_run:
                             stats.failed += 1
                             try:
-                                conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-                                conn_w.row_factory = sqlite3.Row
-                                try:
-                                    _db_mark_failed(conn_w, item_id=item_id, err="MoveFailed", run_id=run.run_id)
-                                finally:
-                                    conn_w.close()
+                                _with_write_connection(_db_mark_failed, item_id=item_id, err="MoveFailed", run_id=run.run_id)
                             except Exception:
                                 pass
                             run.event("item.move.failed", level="ERROR", data={"user": user, "item": item_name, "dest_dir": str(dest_dir), "item_id": item_id})
@@ -543,12 +443,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
                     # DB update OK
                     try:
-                        conn_w = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-                        conn_w.row_factory = sqlite3.Row
-                        try:
-                            _db_mark_ok(conn_w, item_id=item_id, data=data, run_id=run.run_id)
-                        finally:
-                            conn_w.close()
+                        _with_write_connection(_db_mark_ok, item_id=item_id, data=data, run_id=run.run_id)
 
                         stats.ok += 1
                         run.event("item.ok", data={"user": user, "item": item_name, "item_id": item_id, "image_path": dest_rel})
@@ -563,12 +458,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                             ok_rb = robust_move(dest_dir, rollback_target)
                             run.event("item.rollback_move", data={"ok": ok_rb, "user": user, "item": item_name, "item_id": item_id})
                         try:
-                            conn_w2 = sqlite3.connect(str(settings.DB_PATH), timeout=5)
-                            conn_w2.row_factory = sqlite3.Row
-                            try:
-                                _db_mark_failed(conn_w2, item_id=item_id, err=f"DbUpdateFailed:{type(e).__name__}", run_id=run.run_id)
-                            finally:
-                                conn_w2.close()
+                            _with_write_connection(
+                                _db_mark_failed,
+                                item_id=item_id,
+                                err=f"DbUpdateFailed:{type(e).__name__}",
+                                run_id=run.run_id,
+                            )
                         except Exception:
                             pass
 
