@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src import settings
+from src.ontology_runtime_index import build_runtime_indexes
 from src.ontology_runtime_loader import build_runtime_seed_data, extract_yaml_from_md
 from src.ontology_runtime_sources import load_color_lexicon, load_legacy_values, load_overrides
 
@@ -120,134 +121,27 @@ class OntologyManager:
         return load_legacy_values(settings.DB_PATH)
 
     def _build_indexes(self) -> None:
-        cat_ids = set()
-        for c in self.categories:
-            cid = c.get("id", "")
-            if not cid:
-                continue
-            cat_ids.add(cid)
-            parent_id = c.get("parent_id") or None
-            self._cat_parent[cid] = parent_id
+        indexes = build_runtime_indexes(
+            categories=self.categories,
+            value_sets=self.value_sets,
+            materials=self.materials,
+            overrides_raw=self.overrides_raw,
+            color_lexicon_raw=self.color_lexicon_raw,
+            normalize=_norm,
+            logger_instance=logger,
+        )
 
-            label_de = c.get("label_de") or ""
-            label_en = c.get("label_en") or ""
-            self._cat_label[cid] = label_de or label_en or cid
-
-            tokens = [cid, label_de, label_en]
-            examples = c.get("examples") or []
-            if isinstance(examples, list):
-                tokens.extend([str(x) for x in examples])
-
-            for token in tokens:
-                normalized_token = _norm(str(token))
-                if normalized_token:
-                    self._idx_category[normalized_token] = cid
-
-        self._category_roots = [cid for cid, pid in self._cat_parent.items() if not pid]
-
-        color_values = set()
-        for row in self.value_sets.get("color_primary", []):
-            val = row.get("value")
-            if not val:
-                continue
-            color_values.add(val)
-            self._idx_color[_norm(val)] = val
-            for syn in (row.get("synonyms_de") or []):
-                self._idx_color[_norm(str(syn))] = val
-
-        fit_values = set()
-        for row in self.value_sets.get("fit", []):
-            val = row.get("value")
-            if not val:
-                continue
-            fit_values.add(val)
-            self._idx_fit[_norm(val)] = val
-            for syn in (row.get("synonyms_de") or []):
-                self._idx_fit[_norm(str(syn))] = val
-
-        collar_values = set()
-        for row in self.value_sets.get("collar", []):
-            val = row.get("value")
-            if not val:
-                continue
-            collar_values.add(val)
-            self._idx_collar[_norm(val)] = val
-            for syn in (row.get("synonyms_de") or []):
-                self._idx_collar[_norm(str(syn))] = val
-
-        material_ids = set()
-        for material in self.materials:
-            material_id = material.get("id")
-            if not material_id:
-                continue
-            material_ids.add(material_id)
-            label_de = material.get("label_de") or ""
-            label_en = material.get("label_en") or ""
-            self._mat_label[material_id] = label_de or label_en or material_id
-
-            tokens = [material_id, label_de, label_en]
-            synonyms = material.get("synonyms") or []
-            if isinstance(synonyms, list):
-                tokens.extend([str(x) for x in synonyms])
-
-            for token in tokens:
-                normalized_token = _norm(str(token))
-                if normalized_token:
-                    self._idx_material[normalized_token] = material_id
-
-        raw = self.overrides_raw or {}
-        for field, mapping in raw.items():
-            if field not in self._override or not isinstance(mapping, dict):
-                continue
-            for key, canon in mapping.items():
-                normalized_key = _norm(str(key))
-                canonical_value = str(canon).strip()
-                if not normalized_key or not canonical_value:
-                    continue
-
-                is_valid = False
-                if field == "category":
-                    is_valid = canonical_value in cat_ids
-                    if is_valid:
-                        self._idx_category[normalized_key] = canonical_value
-                elif field == "color_primary":
-                    is_valid = canonical_value in color_values
-                    if is_valid:
-                        self._idx_color[normalized_key] = canonical_value
-                elif field == "fit":
-                    is_valid = canonical_value in fit_values
-                    if is_valid:
-                        self._idx_fit[normalized_key] = canonical_value
-                elif field == "collar":
-                    is_valid = canonical_value in collar_values
-                    if is_valid:
-                        self._idx_collar[normalized_key] = canonical_value
-                elif field == "material_main":
-                    is_valid = canonical_value in material_ids
-                    if is_valid:
-                        self._idx_material[normalized_key] = canonical_value
-
-                if is_valid:
-                    self._override[field][normalized_key] = canonical_value
-                else:
-                    logger.warning(
-                        f"Ignoring invalid override: field={field} key={key} -> {canonical_value}",
-                        extra={"request_id": "-"},
-                    )
-
-        for raw_key, meta in (self.color_lexicon_raw or {}).items():
-            normalized_key = _norm(raw_key)
-            if not normalized_key:
-                continue
-            family = str(meta.get("family", "")).strip()
-            if family and family in color_values:
-                self._color_lexicon[normalized_key] = dict(meta)
-                self._idx_color[normalized_key] = family
-            else:
-                logger.warning(
-                    f"Ignoring invalid color_lexicon entry: {raw_key} -> {family}",
-                    extra={"request_id": "-"},
-                )
+        self._idx_category = indexes.idx_category
+        self._cat_label = indexes.cat_label
+        self._cat_parent = indexes.cat_parent
+        self._idx_color = indexes.idx_color
+        self._idx_fit = indexes.idx_fit
+        self._idx_collar = indexes.idx_collar
+        self._idx_material = indexes.idx_material
+        self._mat_label = indexes.mat_label
+        self._override = indexes.override
+        self._color_lexicon = indexes.color_lexicon
+        self._category_roots = indexes.category_roots
 
     def _suggest(
         self,
