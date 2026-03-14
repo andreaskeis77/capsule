@@ -12,9 +12,7 @@ if _repo_root_str not in sys.path:
 # ---------------------------------------------------------------------------------------------
 
 import argparse
-import base64
 import gc
-import hashlib
 import json
 import logging
 import os
@@ -26,6 +24,15 @@ from typing import Any, Dict, List, Optional
 
 from src import settings
 from src.db_schema import ensure_schema
+from src.ingest_item_io import (
+    VALID_IMAGE_EXTS,
+    VALID_TEXT_EXTS,
+    encode_bytes as _encode_bytes,
+    folder_signature_fingerprint as _folder_signature_fingerprint,
+    image_to_data_url as _image_to_data_url,
+    list_image_files as _list_image_files,
+    read_text_files as _read_text_files,
+)
 from src.run_registry import start_run
 
 logging.basicConfig(
@@ -36,10 +43,6 @@ logging.basicConfig(
 logger = logging.getLogger("WardrobeIngest")
 
 VALID_USERS = {"andreas", "karen"}
-VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".jfif", ".heic"}  # heic best-effort
-VALID_TEXT_EXTS = {".txt"}
-
-
 @dataclass
 class Stats:
     scanned: int = 0
@@ -52,88 +55,6 @@ class Stats:
 
 def _now_s() -> float:
     return time.perf_counter()
-
-
-def _read_text_files(item_dir: Path) -> str:
-    parts: List[str] = []
-    for p in sorted(item_dir.rglob("*")):
-        if p.is_file() and p.suffix.lower() in VALID_TEXT_EXTS:
-            try:
-                parts.append(p.read_text(encoding="utf-8", errors="replace"))
-            except Exception:
-                logger.exception("Failed reading text file: %s", p)
-    return "\n".join(parts).strip()
-
-
-def _list_image_files(item_dir: Path) -> List[Path]:
-    imgs: List[Path] = []
-    for p in sorted(item_dir.rglob("*")):
-        if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS:
-            imgs.append(p)
-    return imgs
-
-
-def _folder_signature_fingerprint(item_dir: Path) -> str:
-    """
-    Folder signature fingerprint (fast):
-      - uses relative paths + file sizes (NOT contents)
-      - stable across moves/renames of the outer folder
-    """
-    entries: List[Dict[str, Any]] = []
-    for p in sorted(item_dir.rglob("*")):
-        if not p.is_file():
-            continue
-        try:
-            rel = p.relative_to(item_dir).as_posix()
-        except Exception:
-            rel = p.name
-        try:
-            size = p.stat().st_size
-        except Exception:
-            size = None
-        entries.append({"rel": rel, "size": size})
-
-    blob = json.dumps(entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def _encode_bytes(b: bytes) -> str:
-    return base64.b64encode(b).decode("ascii")
-
-
-def _image_to_data_url(path: Path) -> Optional[Dict[str, Any]]:
-    ext = path.suffix.lower().lstrip(".")
-    if ext == "jfif":
-        ext = "jpeg"
-
-    raw: Optional[bytes] = None
-    mime = None
-
-    try:
-        if ext in {"jpg", "jpeg", "png", "webp"}:
-            raw = path.read_bytes()
-            mime = ext
-        else:
-            from PIL import Image  # lazy import
-
-            with Image.open(path) as img:
-                img = img.convert("RGB")
-                import io
-
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=85, optimize=True)
-                raw = buf.getvalue()
-                mime = "jpeg"
-    except Exception:
-        return None
-
-    if not raw or not mime:
-        return None
-
-    return {
-        "type": "image_url",
-        "image_url": {"url": f"data:image/{mime};base64,{_encode_bytes(raw)}"},
-    }
 
 
 def _get_openai_client():
