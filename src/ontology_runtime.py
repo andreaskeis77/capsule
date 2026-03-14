@@ -3,14 +3,19 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src import settings
 from src.ontology_runtime_index import build_runtime_indexes
 from src.ontology_runtime_loader import build_runtime_seed_data, extract_yaml_from_md
-from src.ontology_runtime_matcher import RuntimeMatchContext, normalize_runtime_field
+from src.ontology_runtime_service import (
+    RuntimeNormalizationPolicy,
+    RuntimeNormalizationState,
+    normalize_value,
+    validate_or_normalize_value,
+)
+from src.ontology_runtime_types import NormalizationResult, Suggestion
 from src.ontology_runtime_sources import load_color_lexicon, load_legacy_values, load_overrides
 
 logger = logging.getLogger("WardrobeControl")
@@ -32,22 +37,6 @@ def _norm(s: str) -> str:
     return s
 
 
-@dataclass(frozen=True)
-class Suggestion:
-    canonical: str
-    score: float
-    label: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class NormalizationResult:
-    field: str
-    original: str
-    canonical: Optional[str]
-    matched_by: str  # override|lexicon|exact/synonym|fuzzy|legacy|none
-    confidence: float
-    suggestions: List[Suggestion]
-    meta: Optional[Dict[str, Any]] = None
 
 
 class OntologyManager:
@@ -143,8 +132,8 @@ class OntologyManager:
         self._color_lexicon = indexes.color_lexicon
         self._category_roots = indexes.category_roots
 
-    def _match_context(self) -> RuntimeMatchContext:
-        return RuntimeMatchContext(
+    def _normalization_state(self) -> RuntimeNormalizationState:
+        return RuntimeNormalizationState(
             idx_category=self._idx_category,
             cat_label=self._cat_label,
             idx_color=self._idx_color,
@@ -159,58 +148,28 @@ class OntologyManager:
         )
 
     @staticmethod
-    def _to_normalization_result(decision) -> NormalizationResult:
-        return NormalizationResult(
-            field=decision.field,
-            original=decision.original,
-            canonical=decision.canonical,
-            matched_by=decision.matched_by,
-            confidence=decision.confidence,
-            suggestions=[
-                Suggestion(
-                    canonical=suggestion.canonical,
-                    score=suggestion.score,
-                    label=suggestion.label,
-                )
-                for suggestion in decision.suggestions
-            ],
-            meta=decision.meta,
+    def _normalization_policy() -> RuntimeNormalizationPolicy:
+        return RuntimeNormalizationPolicy(
+            suggest_threshold=settings.ONTOLOGY_SUGGEST_THRESHOLD,
+            fuzzy_threshold=settings.ONTOLOGY_FUZZY_THRESHOLD,
+            mode=settings.ONTOLOGY_MODE,
+            allow_legacy=settings.ONTOLOGY_ALLOW_LEGACY,
         )
 
     def normalize_field(self, field: str, value: str) -> NormalizationResult:
-        decision = normalize_runtime_field(
+        return normalize_value(
             field=field,
             value=value,
-            context=self._match_context(),
+            state=self._normalization_state(),
+            policy=self._normalization_policy(),
             normalize=_norm,
-            suggest_threshold=settings.ONTOLOGY_SUGGEST_THRESHOLD,
-            fuzzy_threshold=settings.ONTOLOGY_FUZZY_THRESHOLD,
         )
-        return self._to_normalization_result(decision)
 
     def validate_or_normalize(self, field: str, value: Optional[str]) -> Tuple[Optional[str], NormalizationResult]:
-        if value is None:
-            nr = NormalizationResult(
-                field=field,
-                original="",
-                canonical=None,
-                matched_by="none",
-                confidence=0.0,
-                suggestions=[],
-                meta=None,
-            )
-            return None, nr
-
-        nr = self.normalize_field(field, value)
-
-        if settings.ONTOLOGY_MODE == "off":
-            return value, nr
-
-        if nr.canonical is None:
-            return None, nr
-
-        if settings.ONTOLOGY_MODE == "strict":
-            if nr.matched_by == "legacy" and not settings.ONTOLOGY_ALLOW_LEGACY:
-                return None, nr
-
-        return nr.canonical, nr
+        return validate_or_normalize_value(
+            field=field,
+            value=value,
+            state=self._normalization_state(),
+            policy=self._normalization_policy(),
+            normalize=_norm,
+        )
