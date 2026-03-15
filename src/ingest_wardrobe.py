@@ -13,17 +13,21 @@ if _repo_root_str not in sys.path:
 
 import argparse
 import gc
-import json
 import logging
 import os
 import shutil
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from src import settings
 from src.db_schema import ensure_schema
+from src.ingest_item_ai import (
+    analyze_item_hybrid,
+    fake_ai as _fake_ai,
+    get_openai_client as _get_openai_client,
+)
 from src.ingest_item_db import (
     claim_pending as _db_claim_pending,
     connect_db,
@@ -63,68 +67,6 @@ class Stats:
 
 def _now_s() -> float:
     return time.perf_counter()
-
-
-def _get_openai_client():
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception as e:
-        raise RuntimeError(f"OpenAI SDK not available: {e}") from e
-    return OpenAI()
-
-
-def analyze_item_hybrid(image_paths: List[Path], text_context: str, *, model: str, max_images: int) -> Optional[Dict[str, Any]]:
-    prompt = (
-        "Analysiere dieses Kleidungsstück.\n"
-        f"TEXT-DATEN: '{text_context}'\n"
-        "Nutze STRIKT die Mode-Ontologie IDs (cat_..., etc.).\n"
-        "GIB NUR EIN VALIDES JSON ZURÜCK:\n"
-        "{\n"
-        '  "brand": "Marke", "category": "cat_...", "name": "Produktname",\n'
-        '  "color_primary": "Farbe", "material_main": "Material",\n'
-        '  "fit": "Passform", "collar": "Kragenform", "price": "Preis",\n'
-        '  "vision_description": "Detaillierte Analyse"\n'
-        "}"
-    )
-
-    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-    attached = 0
-    for p in image_paths:
-        if attached >= max_images:
-            break
-        payload = _image_to_data_url(p)
-        if payload is None:
-            continue
-        content.append(payload)
-        attached += 1
-
-    client = _get_openai_client()
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": content}],
-            response_format={"type": "json_object"},
-        )
-        txt = resp.choices[0].message.content
-        return json.loads(txt)
-    except Exception as e:
-        logger.error("[OpenAI] error: %s", e)
-        return None
-
-
-def _fake_ai(item_name: str, text_context: str) -> Dict[str, Any]:
-    # deterministic, test-friendly fallback
-    return {
-        "name": item_name,
-        "brand": None,
-        "category": "cat_test",
-        "color_primary": None,
-        "material_main": None,
-        "fit": None,
-        "collar": None,
-        "price": None,
-        "vision_description": f"FAKE_AI: {text_context[:200]}".strip(),
-    }
 
 
 def _connect_ro() -> sqlite3.Connection:
