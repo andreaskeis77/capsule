@@ -12,13 +12,10 @@ if _repo_root_str not in sys.path:
 # ---------------------------------------------------------------------------------------------
 
 import argparse
-import gc
 import logging
 import os
-import shutil
 import sqlite3
 import time
-from dataclasses import dataclass
 from typing import List, Optional
 
 from src import settings
@@ -46,6 +43,7 @@ from src.ingest_item_io import (
     list_image_files as _list_image_files,
     read_text_files as _read_text_files,
 )
+from src.ingest_item_runner import Stats, build_run_meta, run_ingest
 from src.run_registry import start_run
 
 logging.basicConfig(
@@ -56,14 +54,7 @@ logging.basicConfig(
 logger = logging.getLogger("WardrobeIngest")
 
 VALID_USERS = {"andreas", "karen"}
-@dataclass
-class Stats:
-    scanned: int = 0
-    processed: int = 0
-    ok: int = 0
-    failed: int = 0
-    skipped: int = 0
-    quarantined: int = 0
+
 
 
 def _now_s() -> float:
@@ -76,8 +67,6 @@ def _connect_ro() -> sqlite3.Connection:
 
 def _with_write_connection(operation, *args, **kwargs):
     return run_with_connection(settings.DB_PATH, operation, *args, **kwargs)
-
-
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -122,269 +111,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     archive_dir = Path(args.archive_dir)
     quarantine_dir = Path(args.quarantine_dir)
 
-    meta = {
-        "input_dir": str(input_dir),
-        "archive_dir": str(archive_dir),
-        "quarantine_dir": str(quarantine_dir),
-        "user": args.user or None,
-        "max_items": args.max_items,
-        "dry_run": bool(args.dry_run),
-        "fake_ai": bool(args.fake_ai),
-        "model": args.model,
-        "max_images": args.max_images,
-        "force": bool(args.force),
-    }
-
+    meta = build_run_meta(args, input_dir=input_dir, archive_dir=archive_dir, quarantine_dir=quarantine_dir)
     run = start_run("ingest", "wardrobe_ingest", meta=meta)
     t0 = _now_s()
 
-    try:
-        run.event("ingest.start", data=meta)
-
-        if not input_dir.exists():
-            run.event("ingest.input_missing", level="ERROR", message=f"Missing input dir: {input_dir}")
-            run.fail(summary=f"MissingInputDir: {input_dir}")
-            return 2
-
-        # determine users
-        if args.user:
-            u = args.user.strip().lower()
-            if u not in VALID_USERS:
-                run.event("ingest.invalid_user", level="ERROR", message=f"Invalid user: {u}")
-                run.fail(summary=f"InvalidUser: {u}")
-                return 2
-            users = [u]
-        else:
-            users = [p.name for p in sorted(input_dir.iterdir()) if p.is_dir()]
-
-        stats = Stats()
-
-        conn = _connect_ro()
-        try:
-            for user in users:
-                user = user.strip().lower()
-                if user not in VALID_USERS:
-                    run.event("ingest.skip_unknown_user_dir", level="WARN", message=f"Skipping dir: {user}")
-                    continue
-
-                u_path = input_dir / user
-                if not u_path.exists():
-                    run.event("ingest.user_dir_missing", level="WARN", message=f"Missing: {u_path}")
-                    continue
-
-                item_dirs = [p for p in sorted(u_path.iterdir()) if p.is_dir()]
-                run.event("ingest.user.scan", data={"user": user, "items": len(item_dirs)})
-
-                for item_dir in item_dirs:
-                    if args.max_items and stats.processed >= args.max_items:
-                        run.event("ingest.max_items_reached", data={"max_items": args.max_items})
-                        break
-
-                    stats.scanned += 1
-                    item_name = item_dir.name
-
-                    # gather content
-                    img_files = _list_image_files(item_dir)
-                    txt_context = _read_text_files(item_dir)
-
-                    if not img_files and not txt_context:
-                        stats.skipped += 1
-                        run.event("item.skip_empty", level="WARN", data={"user": user, "item": item_name})
-                        continue
-
-                    fp = _folder_signature_fingerprint(item_dir)
-                    dest_rel = f"{user}/{item_name}"
-                    dest_dir = archive_dir / user / item_name
-
-                    run.event("item.start", data={"user": user, "item": item_name, "fingerprint": fp[:12]})
-
-                    # Fast skip: fingerprint already ingested OK
-                    existing = _db_get_by_fingerprint(conn, user, fp)
-                    if existing and (existing["ingest_status"] or "").lower() == "ok" and (not args.force):
-                        # move duplicate out of input to quarantine
-                        quarantine_target = quarantine_dir / user / f"{item_name}__dup__{fp[:8]}"
-                        ok_q = robust_move(item_dir, quarantine_target)
-                        stats.skipped += 1
-                        stats.quarantined += 1 if ok_q else 0
-                        run.event(
-                            "item.dup.skip",
-                            level="WARN",
-                            data={
-                                "user": user,
-                                "item": item_name,
-                                "fingerprint": fp,
-                                "quarantine_ok": ok_q,
-                                "quarantine_target": str(quarantine_target),
-                                "existing_item_id": int(existing["id"]),
-                            },
-                        )
-                        continue
-
-                    # dry-run: simulate only (no DB, no moves, no OpenAI)
-                    if args.dry_run:
-                        stats.processed += 1
-                        stats.ok += 1
-                        run.event(
-                            "item.dry_run",
-                            data={
-                                "user": user,
-                                "item": item_name,
-                                "fingerprint": fp,
-                                "images": len(img_files),
-                                "text_chars": len(txt_context),
-                                "would_move_to": str(dest_dir),
-                                "would_insert_image_path": dest_rel,
-                            },
-                        )
-                        continue
-
-                    # claim pending row (prevents orphan moves)
-                    stats.processed += 1
-                    try:
-                        item_id = _with_write_connection(
-                            _db_claim_pending,
-                            user=user,
-                            item_name=item_name,
-                            image_path=dest_rel,
-                            fp=fp,
-                            run_id=run.run_id,
-                        )
-                    except Exception as e:
-                        stats.failed += 1
-                        run.event("item.claim_failed", level="ERROR", message=str(e), data={"user": user, "item": item_name})
-                        continue
-
-                    # analyze (fake-ai or OpenAI)
-                    if args.fake_ai:
-                        data = _fake_ai(item_name, txt_context)
-                    else:
-                        run.event("item.analyze.start", data={"user": user, "item": item_name, "images": len(img_files), "text_chars": len(txt_context)})
-                        data = analyze_item_hybrid(img_files, txt_context, model=args.model, max_images=args.max_images)
-
-                    if not data:
-                        stats.failed += 1
-                        try:
-                            _with_write_connection(_db_mark_failed, item_id=item_id, err="AnalyzeFailed", run_id=run.run_id)
-                        except Exception:
-                            pass
-                        run.event("item.analyze.failed", level="ERROR", data={"user": user, "item": item_name, "item_id": item_id})
-                        continue
-
-                    # close file handles before move (Windows)
-                    gc.collect()
-
-                    moved_this_run = False
-
-                    # move folder into archive if needed
-                    if dest_dir.exists():
-                        if item_dir.exists():
-                            if args.force:
-                                moved_this_run = robust_move(item_dir, dest_dir)
-                                if not moved_this_run:
-                                    stats.failed += 1
-                                    run.event("item.move.failed", level="ERROR", data={"user": user, "item": item_name, "dest_dir": str(dest_dir), "item_id": item_id})
-                                    continue
-                            else:
-                                # conflict: both src and dest exist -> quarantine src
-                                quarantine_target = quarantine_dir / user / f"{item_name}__conflict__{fp[:8]}"
-                                ok_q = robust_move(item_dir, quarantine_target)
-                                stats.failed += 1
-                                stats.quarantined += 1 if ok_q else 0
-                                try:
-                                    _with_write_connection(
-                                        _db_mark_failed,
-                                        item_id=item_id,
-                                        err="ConflictSrcAndDestExist",
-                                        run_id=run.run_id,
-                                    )
-                                except Exception:
-                                    pass
-                                run.event(
-                                    "item.conflict.src_and_dest_exist",
-                                    level="ERROR",
-                                    data={
-                                        "user": user,
-                                        "item": item_name,
-                                        "item_id": item_id,
-                                        "dest_dir": str(dest_dir),
-                                        "quarantine_ok": ok_q,
-                                        "quarantine_target": str(quarantine_target),
-                                    },
-                                )
-                                continue
-                        else:
-                            # src already gone; dest exists -> recovery path
-                            run.event("item.recover.dest_exists", data={"user": user, "item": item_name, "item_id": item_id, "dest_dir": str(dest_dir)})
-                    else:
-                        if not item_dir.exists():
-                            stats.failed += 1
-                            try:
-                                _with_write_connection(_db_mark_failed, item_id=item_id, err="SourceMissing", run_id=run.run_id)
-                            except Exception:
-                                pass
-                            run.event("item.source_missing", level="ERROR", data={"user": user, "item": item_name, "item_id": item_id})
-                            continue
-                        moved_this_run = robust_move(item_dir, dest_dir)
-                        if not moved_this_run:
-                            stats.failed += 1
-                            try:
-                                _with_write_connection(_db_mark_failed, item_id=item_id, err="MoveFailed", run_id=run.run_id)
-                            except Exception:
-                                pass
-                            run.event("item.move.failed", level="ERROR", data={"user": user, "item": item_name, "dest_dir": str(dest_dir), "item_id": item_id})
-                            continue
-
-                    # DB update OK
-                    try:
-                        _with_write_connection(_db_mark_ok, item_id=item_id, data=data, run_id=run.run_id)
-
-                        stats.ok += 1
-                        run.event("item.ok", data={"user": user, "item": item_name, "item_id": item_id, "image_path": dest_rel})
-
-                    except Exception as e:
-                        stats.failed += 1
-                        run.event("item.db_update_failed", level="ERROR", message=str(e), data={"user": user, "item": item_name, "item_id": item_id})
-
-                        # rollback move if we moved this run
-                        if moved_this_run and dest_dir.exists():
-                            rollback_target = input_dir / user / item_name
-                            ok_rb = robust_move(dest_dir, rollback_target)
-                            run.event("item.rollback_move", data={"ok": ok_rb, "user": user, "item": item_name, "item_id": item_id})
-                        try:
-                            _with_write_connection(
-                                _db_mark_failed,
-                                item_id=item_id,
-                                err=f"DbUpdateFailed:{type(e).__name__}",
-                                run_id=run.run_id,
-                            )
-                        except Exception:
-                            pass
-
-            # end loops
-        finally:
-            conn.close()
-
-        dur_ms = int((_now_s() - t0) * 1000)
-        summary = (
-            f"scanned={stats.scanned} processed={stats.processed} ok={stats.ok} failed={stats.failed} "
-            f"skipped={stats.skipped} quarantined={stats.quarantined} dry_run={args.dry_run} fake_ai={args.fake_ai} dur_ms={dur_ms}"
-        )
-        run.event("ingest.done", data={"stats": stats.__dict__, "dur_ms": dur_ms})
-
-        if stats.failed > 0 and stats.ok > 0:
-            run.partial(summary=summary)
-            return 2
-        if stats.failed > 0 and stats.ok == 0:
-            run.fail(summary=summary)
-            return 2
-
-        run.ok(summary=summary)
-        return 0
-
-    except Exception as e:
-        run.event("ingest.exception", level="ERROR", message=str(e))
-        run.fail(summary=f"{type(e).__name__}: {e}")
-        raise
+    return run_ingest(
+        args=args,
+        run=run,
+        t0=t0,
+        now_s=_now_s,
+        input_dir=input_dir,
+        archive_dir=archive_dir,
+        quarantine_dir=quarantine_dir,
+        valid_users=VALID_USERS,
+        connect_ro=_connect_ro,
+        write_connection=_with_write_connection,
+        list_image_files=_list_image_files,
+        read_text_files=_read_text_files,
+        folder_signature_fingerprint=_folder_signature_fingerprint,
+        db_get_by_fingerprint=_db_get_by_fingerprint,
+        db_claim_pending=_db_claim_pending,
+        db_mark_ok=_db_mark_ok,
+        db_mark_failed=_db_mark_failed,
+        robust_move=robust_move,
+        analyze_item_hybrid=analyze_item_hybrid,
+        fake_ai=_fake_ai,
+    )
 
 
 if __name__ == "__main__":
