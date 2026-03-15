@@ -36,6 +36,7 @@ from src.ingest_item_db import (
     mark_ok as _db_mark_ok,
     run_with_connection,
 )
+from src.ingest_item_fs import robust_move, robust_rmtree as _robust_rmtree
 from src.ingest_item_io import (
     VALID_IMAGE_EXTS,
     VALID_TEXT_EXTS,
@@ -77,56 +78,6 @@ def _with_write_connection(operation, *args, **kwargs):
     return run_with_connection(settings.DB_PATH, operation, *args, **kwargs)
 
 
-def _robust_rmtree(path: Path) -> None:
-    import stat
-    import inspect
-
-    has_onexc = "onexc" in inspect.signature(shutil.rmtree).parameters
-
-    def _make_writable(p) -> None:
-        try:
-            os.chmod(p, stat.S_IWRITE)
-        except Exception:
-            pass
-
-    def _onerror(func, p, exc_info):
-        _make_writable(p)
-        try:
-            func(p)
-        except Exception:
-            pass
-
-    def _onexc(func, p, exc):
-        _make_writable(p)
-        try:
-            func(p)
-        except Exception:
-            pass
-
-    if not path.exists():
-        return
-
-    if has_onexc:
-        shutil.rmtree(path, onexc=_onexc)
-    else:
-        shutil.rmtree(path, onerror=_onerror)
-
-
-def robust_move(src: Path, dst: Path, *, retries: int = 3, delay_s: float = 0.8) -> bool:
-    for i in range(retries):
-        try:
-            if dst.exists():
-                _robust_rmtree(dst)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dst))
-            return True
-        except PermissionError:
-            logger.warning("PermissionError, retrying (%d/%d)...", i + 1, retries)
-            time.sleep(delay_s)
-        except Exception as e:
-            logger.error("Move failed: %s", e)
-            break
-    return False
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
