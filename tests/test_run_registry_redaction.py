@@ -17,10 +17,11 @@ def test_run_registry_redacts_secrets_in_meta_and_events(tmp_path, monkeypatch):
     ensure_schema()
 
     meta = {
-        "OPENAI_API_KEY": "sk-test-THISMUSTNOTPERSIST",
+        "OPENAI_API_KEY": "sk-test-THISMUSTNOTPERSIST",  # secret-scan:ignore
         "WARDROBE_API_KEY": "supersecret",
         "nested": {"authorization": "Bearer abc.def.ghi", "ok": "keepme"},
     }
+
     h = start_run("test", "redaction", meta=meta)
     h.event(
         "test.event",
@@ -41,7 +42,10 @@ def test_run_registry_redacts_secrets_in_meta_and_events(tmp_path, monkeypatch):
     assert meta_json["nested"]["authorization"] == REDACT_PLACEHOLDER
     assert meta_json["nested"]["ok"] == "keepme"
 
-    cur.execute("SELECT data_json FROM run_events WHERE run_id = ? ORDER BY id ASC LIMIT 1", (h.run_id,))
+    cur.execute(
+        "SELECT data_json FROM run_events WHERE run_id = ? ORDER BY id ASC LIMIT 1",
+        (h.run_id,),
+    )
     erow = cur.fetchone()
     assert erow is not None
     data_json = json.loads(erow["data_json"])
@@ -51,7 +55,7 @@ def test_run_registry_redacts_secrets_in_meta_and_events(tmp_path, monkeypatch):
 
     # Ensure raw secret strings do not appear anywhere in stored JSON
     raw = (mrow["meta_json"] or "") + (erow["data_json"] or "")
-    assert "sk-test-THISMUSTNOTPERSIST" not in raw
+    assert "sk-test-THISMUSTNOTPERSIST" not in raw  # secret-scan:ignore
     assert "supersecret" not in raw
     assert "abc.def.ghi" not in raw
 

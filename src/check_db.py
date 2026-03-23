@@ -1,57 +1,47 @@
-import sqlite3
-import os
+from __future__ import annotations
 
-# --- KONFIGURATION ---
-BASE_DIR = os.getcwd()
-DB_PATH = os.path.join(BASE_DIR, "03_database", "wardrobe.db")
+from pathlib import Path
 
-def check_inventory():
-    if not os.path.exists(DB_PATH):
-        print(f"[-] Fehler: Datenbank nicht gefunden unter {DB_PATH}")
+from src import settings
+from src.db_inspect import fetch_inventory_rows, summarize_row
+
+
+def check_inventory(db_path: Path | None = None) -> None:
+    target = Path(db_path) if db_path is not None else Path(settings.DB_PATH)
+    if not target.exists():
+        print(f"[-] Fehler: Datenbank nicht gefunden unter {target}")
         return
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
     try:
-        cursor.execute("SELECT * FROM items")
-        rows = cursor.fetchall()
-    except sqlite3.OperationalError as e:
+        rows = fetch_inventory_rows(target)
+    except Exception as e:
         print(f"[-] Datenbankfehler: {e}")
-        conn.close()
         return
-    
-    print("\n" + "█"*100)
-    print(f"  CAPSULE WARDROBE - VISION CHECK: {len(rows)} Teile erfasst")
-    print("█"*100)
+
+    print("\n" + "█" * 100)
+    print(f" CAPSULE WARDROBE - VISION CHECK: {len(rows)} Teile erfasst")
+    print("█" * 100)
 
     for row in rows:
-        # Fallback für leere Werte
-        item = {k: (v if v is not None else "---") for k, v in dict(row).items()}
-        
+        item = summarize_row(row)
+
         print(f"\nID: {item['id']} | ARTIKEL: {item['name']}")
         print("-" * 100)
-        
-        # Basis-Daten
-        print(f"MARKE:     {str(item['brand']):<20} | KAT:       {item['category']}")
-        print(f"MODELL:    {str(item['model_name']):<20} | FARBE:     {item['color_primary']}")
-        print(f"MATERIAL:  {item['material_main']}")
-        print(f"PASSFORM:  {str(item['fit']):<20} | KRAGEN:    {item['collar']}")
-        
-        # Der neue Vision-Block (Expertise von GPT-5.2)
+        print(f"MARKE: {str(item['brand']):<20} | KAT: {item['category']}")
+        print(f"FARBE: {item['color_primary']}")
+        print(f"MATERIAL: {item['material_main']}")
+        print(f"PASSFORM: {str(item['fit']):<20} | KRAGEN: {item['collar']}")
         print("\n[KI-VISION-ANALYSE]:")
-        vision_text = item.get('vision_description', '---')
-        # Wir rücken den Text etwas ein für bessere Lesbarkeit
+
+        vision_text = str(item.get("vision_description", "---"))
         if vision_text != "---":
-            print(f"> {vision_text[:500]}...") # Zeigt die ersten 500 Zeichen an
+            print(f"> {vision_text[:500]}...")
         else:
             print("> Keine Vision-Daten vorhanden.")
-            
         print("-" * 100)
-        print("█" * 100)
 
-    conn.close()
+    print("█" * 100)
+
 
 if __name__ == "__main__":
     check_inventory()

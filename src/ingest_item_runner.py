@@ -3,7 +3,9 @@ from __future__ import annotations
 import gc
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
+
+from src.ingest_run_outcome import finalize_ingest_run, summarize_ingest_stats
 
 
 @dataclass
@@ -37,14 +39,18 @@ def build_run_meta(
     }
 
 
+# Backward-compatible export for existing imports/tests.
 def summarize_stats(stats: Stats, *, dry_run: bool, fake_ai: bool, dur_ms: int) -> str:
-    return (
-        f"scanned={stats.scanned} processed={stats.processed} ok={stats.ok} failed={stats.failed} "
-        f"skipped={stats.skipped} quarantined={stats.quarantined} dry_run={dry_run} fake_ai={fake_ai} dur_ms={dur_ms}"
-    )
+    return summarize_ingest_stats(stats, dry_run=dry_run, fake_ai=fake_ai, dur_ms=dur_ms)
 
 
-def resolve_requested_users(*, args_user: str, input_dir: Path, valid_users: Set[str], run: Any) -> tuple[Optional[List[str]], Optional[int]]:
+def resolve_requested_users(
+    *,
+    args_user: str,
+    input_dir: Path,
+    valid_users: Set[str],
+    run: Any,
+) -> tuple[Optional[List[str]], Optional[int]]:
     if args_user:
         user = args_user.strip().lower()
         if user not in valid_users:
@@ -309,18 +315,13 @@ def run_ingest(
             conn.close()
 
         dur_ms = int((now_s() - t0) * 1000)
-        summary = summarize_stats(stats, dry_run=bool(args.dry_run), fake_ai=bool(args.fake_ai), dur_ms=dur_ms)
-        run.event("ingest.done", data={"stats": stats.__dict__, "dur_ms": dur_ms})
-
-        if stats.failed > 0 and stats.ok > 0:
-            run.partial(summary=summary)
-            return 2
-        if stats.failed > 0 and stats.ok == 0:
-            run.fail(summary=summary)
-            return 2
-
-        run.ok(summary=summary)
-        return 0
+        return finalize_ingest_run(
+            run,
+            stats,
+            dry_run=bool(args.dry_run),
+            fake_ai=bool(args.fake_ai),
+            dur_ms=dur_ms,
+        )
 
     except Exception as exc:
         run.event("ingest.exception", level="ERROR", message=str(exc))

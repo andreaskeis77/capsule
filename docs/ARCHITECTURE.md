@@ -1,72 +1,48 @@
-# Architecture – Wardrobe Studio (CapsuleWardrobeRAG)
+# Architecture Overview
 
-## High-Level
-Ein lokales Wardrobe-Management-System mit:
-- FastAPI (API v2 + Health)
-- Flask Dashboard (UI) via WSGI-Mount (a2wsgi)
-- Ontologie Runtime (Overrides + Color Lexicon + Ontology Markdown Parts)
-- DB Layer (Model/Manager + Schema Updates)
-- Optional: ngrok Public Access (feste Domain)
+## Zielbild
 
-## Runtime Entry
-- Startpunkt: `src/server_entry.py`
-  - startet Uvicorn auf Port 5002
-  - lädt `src/api_main.py` als ASGI-App
+Capsule ist in Schichten organisiert, damit Fachlogik, Runtime, Persistenz und Betrieb getrennt geändert werden können.
 
-## ASGI App & Routing
-- `src/api_main.py`
-  - baut FastAPI App
-  - mountet API v2 (`src/api_v2.py`)
-  - mountet Flask Dashboard (`src/web_dashboard.py`) über `a2wsgi.WSGIMiddleware`
-  - bietet Healthcheck `/healthz`
+## Hauptschichten
 
-## API v2
+### 1. API / Presentation
 - `src/api_v2.py`
-  - enthält API v2 Endpoints
-  - lädt Ontologie (über `src/ontology_runtime.py`)
-  - verarbeitet Bilder (Pillow / PIL)
-
-## Dashboard (UI)
+- `src/api_v2_routes.py`
 - `src/web_dashboard.py`
-  - Flask App
-  - rendert Templates aus `templates/`
-    - `templates/index.html` (Übersicht/Grid)
-    - `templates/item_detail.html` (Detailansicht)
-  - nutzt API/DB-Zugriff je nach Implementierung (siehe Code)
+- `src/web_dashboard_routes.py`
 
-## Ontologie
-- Ordner: `ontology/`
-  - `ontology_overrides.yaml` (Runtime Overrides)
-  - `color_lexicon.yaml` (Farblexikon)
-  - `ontology_part_01...09_*.md` (Definition/Taxonomie/Attribute/Rules/Glossary)
-- Runtime: `src/ontology_runtime.py`
-  - lädt YAMLs
-  - stellt Ontologie-Objekte/Lookups zur Verfügung
+### 2. Domain / Mapping / Ontology
+- `src/category_map.py`
+- `src/category_map_rules.py`
+- `src/ontology_runtime.py`
+- `src/ontology_runtime_manager.py`
+- `src/ontology_runtime_index.py`
 
-## DB / Models / Migration
-- `src/models.py` – Datamodelle (Pydantic/ORM-ähnlich je nach Ausprägung)
-- `src/database_manager.py` – DB Zugriffe, CRUD, Pfade
-- `src/update_db_schema.py` – Schema Update/Migration
-- `src/check_db.py` – DB Checks
-- `src/export_db.py` – Export Funktionen
-- `src/ingest_wardrobe.py` – Ingest/Import Workflow
+### 3. Ingest / Run-Orchestrierung
+- `src/ingest_item_runner.py`
+- `src/ingest_run_outcome.py`
+- `src/run_registry.py`
 
-## Logging
-- `src/logging_config.py`, `src/logging_utils.py`
-- Log Output/Rotation zusätzlich über `Wardrobe_Studio_Starten.bat` nach `logs/`
+### 4. Persistenz / DB
+- `src/db_schema.py`
+- `src/db_schema_migrations.py`
+- `src/db_sqlite.py`
+- `src/database_manager.py`
 
-## Ops/Start
-- `Wardrobe_Studio_Starten.bat`
-  - startet Server via `.venv\Scripts\python.exe -m src.server_entry`
-  - Readiness Polling über `/healthz`
-  - optional: ngrok Start mit fester Domain
+### 5. Runtime / Entrypoints
+- `src/runtime_env.py`
+- `src/runtime_config.py`
+- `src/server_entry.py`
+- `src/settings.py`
 
-## Dateien & Ordner (wesentlich)
-- `src/` Code
-- `templates/` UI Templates
-- `ontology/` Ontologie + YAML
-- `logs/` runtime logs (rotated)
-- `03_database/` lokale DB
-- `02_wardrobe_images/` lokale Bilder
-- `requirements.txt` Python dependencies (reproduzierbar)
-- `tools/Test-WardrobeApi.ps1` – API Smoke/Manual testing (PowerShell)
+### 6. Tooling / Ops / Governance
+- `tools/run_quality_gates.py`
+- `tools/task_runner.py`
+- `tools/release_evidence.py`
+- `tools/handoff_make.py`
+- `.github/workflows/*`
+
+## Betriebsprinzip
+
+Jede größere Änderung läuft gegen denselben Satz von Gates. Release und Handoff bauen auf denselben Artefakten auf statt auf manuellen Aussagen.

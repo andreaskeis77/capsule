@@ -19,36 +19,15 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
-import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import yaml
 
-
-def utc_now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
-
-
-def sha256_bytes(data: bytes) -> str:
-    h = hashlib.sha256()
-    h.update(data)
-    return h.hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    return sha256_bytes(path.read_bytes())
-
-
-def read_text_robust(path: Path) -> str:
-    raw = path.read_bytes()
-    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("latin-1", errors="replace")
+try:
+    from tools.ops_common import read_text_robust, sha256_bytes, sha256_file, write_json, write_text, utc_now_iso
+except Exception:  # pragma: no cover - direct script execution fallback
+    from ops_common import read_text_robust, sha256_bytes, sha256_file, write_json, write_text, utc_now_iso  # type: ignore
 
 
 def load_yaml(path: Path) -> Any:
@@ -59,32 +38,28 @@ def load_yaml(path: Path) -> Any:
 
 
 def list_ontology_parts(ontology_dir: Path) -> List[Path]:
-    parts = sorted(
-        [p for p in ontology_dir.glob("ontology_part_*.md") if p.is_file()],
-        key=lambda p: p.name.lower(),
-    )
-    return parts
+    return sorted([p for p in ontology_dir.glob("ontology_part_*.md") if p.is_file()], key=lambda p: p.name.lower())
 
 
 def build_parts_index(parts: List[Path], include_text: bool, max_chars: int) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    for p in parts:
-        st = p.stat()
-        txt = read_text_robust(p)
+    for path in parts:
+        st = path.stat()
+        text = read_text_robust(path)
         item: Dict[str, Any] = {
-            "file": p.name,
-            "rel_path": p.name,
+            "file": path.name,
+            "rel_path": path.name,
             "size": int(st.st_size),
             "mtime_utc": dt.datetime.fromtimestamp(st.st_mtime, tz=dt.timezone.utc).replace(microsecond=0).isoformat(),
-            "sha256": sha256_bytes(txt.encode("utf-8", errors="replace")),
-            "line_count": txt.count("\n") + (1 if txt else 0),
+            "sha256": sha256_bytes(text.encode("utf-8", errors="replace")),
+            "line_count": text.count("\n") + (1 if text else 0),
         }
         if include_text:
-            if len(txt) > max_chars:
-                item["text"] = txt[:max_chars]
+            if len(text) > max_chars:
+                item["text"] = text[:max_chars]
                 item["text_note"] = f"TRUNCATED to {max_chars} chars"
             else:
-                item["text"] = txt
+                item["text"] = text
         out.append(item)
     return out
 
@@ -92,7 +67,6 @@ def build_parts_index(parts: List[Path], include_text: bool, max_chars: int) -> 
 def summarize_overrides(overrides: Any) -> Dict[str, Any]:
     if overrides is None:
         return {"present": False}
-
     if isinstance(overrides, dict):
         keys = sorted(list(overrides.keys()), key=lambda s: str(s).lower())
         return {
@@ -101,32 +75,23 @@ def summarize_overrides(overrides: Any) -> Dict[str, Any]:
             "top_level_keys": keys,
             "top_level_key_count": len(keys),
         }
-
-    # fallback
     return {"present": True, "type": type(overrides).__name__}
 
 
-def summarize_color_lexicon(lex: Any) -> Dict[str, Any]:
-    if lex is None:
+def summarize_color_lexicon(lexicon: Any) -> Dict[str, Any]:
+    if lexicon is None:
         return {"present": False}
-
-    if isinstance(lex, dict):
-        keys = sorted(list(lex.keys()), key=lambda s: str(s).lower())
+    if isinstance(lexicon, dict):
+        keys = sorted(list(lexicon.keys()), key=lambda s: str(s).lower())
         return {
             "present": True,
             "type": "dict",
             "entries": len(keys),
             "sample_keys": keys[:15],
         }
-
-    if isinstance(lex, list):
-        return {
-            "present": True,
-            "type": "list",
-            "entries": len(lex),
-        }
-
-    return {"present": True, "type": type(lex).__name__}
+    if isinstance(lexicon, list):
+        return {"present": True, "type": "list", "entries": len(lexicon)}
+    return {"present": True, "type": type(lexicon).__name__}
 
 
 def main() -> int:
@@ -145,11 +110,8 @@ def main() -> int:
     ontology_dir = (root / args.ontology_dir).resolve()
     overrides_path = (root / args.overrides).resolve()
     color_path = (root / args.color_lexicon).resolve()
-
     out_json = Path(args.out_json).resolve()
     out_md = Path(args.out_md).resolve()
-    out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_md.parent.mkdir(parents=True, exist_ok=True)
 
     overrides_obj = load_yaml(overrides_path)
     color_obj = load_yaml(color_path)
@@ -168,41 +130,24 @@ def main() -> int:
             "max_part_chars": int(args.max_part_chars),
         },
         "files": {
-            "overrides": {
-                "exists": overrides_path.exists(),
-                "sha256": sha256_file(overrides_path) if overrides_path.exists() else None,
-            },
-            "color_lexicon": {
-                "exists": color_path.exists(),
-                "sha256": sha256_file(color_path) if color_path.exists() else None,
-            },
-            "parts": [
-                {
-                    "file": p.name,
-                    "sha256": sha256_file(p),
-                }
-                for p in parts
-            ],
+            "overrides": {"exists": overrides_path.exists(), "sha256": sha256_file(overrides_path) if overrides_path.exists() else None},
+            "color_lexicon": {"exists": color_path.exists(), "sha256": sha256_file(color_path) if color_path.exists() else None},
+            "parts": [{"file": p.name, "sha256": sha256_file(p)} for p in parts],
         },
-        # "resolved" content (as used by runtime loaders)
         "resolved": {
             "ontology_overrides": overrides_obj,
             "color_lexicon": color_obj,
-            "parts_index": parts_index,  # includes text only if include-part-text
+            "parts_index": parts_index,
         },
         "summary": {
             "overrides": summarize_overrides(overrides_obj),
             "color_lexicon": summarize_color_lexicon(color_obj),
-            "parts": {
-                "count": len(parts),
-                "files": [p.name for p in parts],
-            },
+            "parts": {"count": len(parts), "files": [p.name for p in parts]},
         },
     }
 
-    out_json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8", newline="\n")
+    write_json(out_json, payload)
 
-    # Markdown summary
     lines: List[str] = []
     lines.append("# Ontology Runtime Dump – Summary\n\n")
     lines.append(f"- generated_utc: {payload['generated_utc']}\n")
@@ -220,25 +165,25 @@ def main() -> int:
     lines.append("\n")
 
     lines.append("## Color lexicon\n\n")
-    cl = payload["summary"]["color_lexicon"]
-    lines.append(f"- present: {cl.get('present')}\n")
-    if cl.get("present"):
-        lines.append(f"- type: {cl.get('type')}\n")
-        if "entries" in cl:
-            lines.append(f"- entries: {cl.get('entries')}\n")
-        if "sample_keys" in cl:
-            lines.append(f"- sample_keys: {', '.join(cl.get('sample_keys', []))}\n")
+    color_summary = payload["summary"]["color_lexicon"]
+    lines.append(f"- present: {color_summary.get('present')}\n")
+    if color_summary.get("present"):
+        lines.append(f"- type: {color_summary.get('type')}\n")
+        if "entries" in color_summary:
+            lines.append(f"- entries: {color_summary.get('entries')}\n")
+        if "sample_keys" in color_summary:
+            lines.append(f"- sample_keys: {', '.join(color_summary.get('sample_keys', []))}\n")
     lines.append("\n")
 
     lines.append("## Overrides\n\n")
-    ov = payload["summary"]["overrides"]
-    lines.append(f"- present: {ov.get('present')}\n")
-    if ov.get("present"):
-        lines.append(f"- type: {ov.get('type')}\n")
-        if "top_level_key_count" in ov:
-            lines.append(f"- top_level_key_count: {ov.get('top_level_key_count')}\n")
-        if "top_level_keys" in ov:
-            keys = ov.get("top_level_keys", [])
+    override_summary = payload["summary"]["overrides"]
+    lines.append(f"- present: {override_summary.get('present')}\n")
+    if override_summary.get("present"):
+        lines.append(f"- type: {override_summary.get('type')}\n")
+        if "top_level_key_count" in override_summary:
+            lines.append(f"- top_level_key_count: {override_summary.get('top_level_key_count')}\n")
+        if "top_level_keys" in override_summary:
+            keys = override_summary.get("top_level_keys", [])
             lines.append(f"- top_level_keys: {', '.join(keys[:25])}{' ...' if len(keys) > 25 else ''}\n")
     lines.append("\n")
 
@@ -252,8 +197,7 @@ def main() -> int:
         lines.append("## Note\n\n")
         lines.append("`parts_index` in JSON includes `text` per file (possibly truncated).\n")
 
-    out_md.write_text("".join(lines), encoding="utf-8", newline="\n")
-
+    write_text(out_md, "".join(lines))
     print(f"Ontology runtime JSON written to: {out_json}")
     print(f"Ontology summary MD written to: {out_md}")
     return 0

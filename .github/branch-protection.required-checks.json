@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "default_branch": "main",
+  "required_status_checks": [
+    "quality-gates / quality-gates",
+    "quality-gates / ci-contracts",
+    "quality-gates / ci-artifact-summary"
+  ],
+  "required_review_count": 1,
+  "dismiss_stale_reviews": true,
+  "require_code_owner_reviews": true,
+  "require_conversation_resolution": true,
+  "restrict_force_pushes": true,
+  "allow_deletions": false
+}

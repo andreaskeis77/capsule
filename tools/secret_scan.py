@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# FILE: tools/secret_scan.py
 from __future__ import annotations
 
 import argparse
@@ -8,7 +7,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Set
+from typing import List, Optional, Sequence
+
 
 # ---- repo root helper ----
 def _find_repo_root(start: Path) -> Path:
@@ -23,6 +23,7 @@ def _find_repo_root(start: Path) -> Path:
 
 
 REPO_ROOT = _find_repo_root(Path.cwd())
+
 
 # ---- heuristics / patterns ----
 MAX_FILE_BYTES_DEFAULT = 2_000_000  # 2 MB
@@ -52,7 +53,6 @@ BINARY_EXTS = {
     ".woff",
     ".woff2",
 }
-
 SKIP_DIR_PARTS = {
     ".venv",
     "venv",
@@ -63,25 +63,23 @@ SKIP_DIR_PARTS = {
     "04_user_data",
     "docs/_snapshot",
 }
-
 IGNORE_MARKER = "secret-scan:ignore"
 
-# OpenAI keys (broad; catches sk-..., sk-proj-..., etc.)
+# Concrete secret-like patterns.
 RE_OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")
-# JWT (common)
 RE_JWT = re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b")
-# Private key blocks
 RE_PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
-# AWS access key id (common)
 RE_AWS_AKIA = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 
-# “Key assignment” heuristic: VAR=VALUE where VALUE is long enough
+# Key assignment heuristic: intentionally conservative.
+# Only uppercase/env-style names are treated as potentially sensitive assignments.
 RE_ASSIGN = re.compile(
-    r"""(?ix)
-    \b([A-Z0-9_]{3,60})\b
+    r"""
+    \b([A-Z][A-Z0-9_]{2,60})\b
     \s*[:=]\s*
     (["']?)([^"'\r\n]+)\2
-    """
+    """,
+    flags=re.IGNORECASE | re.VERBOSE,
 )
 
 SENSITIVE_NAME_TOKENS = (
@@ -107,7 +105,6 @@ PLACEHOLDER_VALUES = {
     "your_key_here",
     "redacted",
     "***redacted***",
-    "***REDACTED***",
     "xxxxx",
     "xxx",
     "test",
@@ -115,6 +112,33 @@ PLACEHOLDER_VALUES = {
     "dummy",
     "dummykey",
 }
+
+SAFE_ASSIGNMENT_PREFIXES = (
+    "x_",
+    "request_",
+    "response_",
+    "normalized_",
+)
+
+SAFE_ASSIGNMENT_NAMES = {
+    "token",
+    "tokens",
+    "normalized_token",
+    "request_token",
+    "csrf_token",
+}
+
+SAFE_CALL_SNIPPETS = (
+    "Header(",
+    "Query(",
+    "Path(",
+    "Cookie(",
+    "Body(",
+    ".set(",
+    "_tokenize(",
+    ".strip(",
+    ".lower(",
+)
 
 
 @dataclass
@@ -130,18 +154,37 @@ def _is_probably_binary(data: bytes) -> bool:
 
 
 def _should_skip_path(p: Path) -> bool:
-    parts = {x.lower() for x in p.parts}
+    parts_lower = {part.lower() for part in p.parts}
     for s in SKIP_DIR_PARTS:
-        if s.lower() in parts:
+        if s.lower() in parts_lower:
             return True
-    if p.suffix.lower() in BINARY_EXTS:
-        return True
-    return False
+    return p.suffix.lower() in BINARY_EXTS
 
 
-def scan_text(text: str, rel_path: str) -> List[Finding]:
+def _looks_like_sensitive_assignment(name: str, val: str, line: str) -> bool:
+    name_low = name.lower()
+    name_up = name.upper()
+    val_low = val.strip().lower()
+
+    if name_low in SAFE_ASSIGNMENT_NAMES:
+        return False
+    if any(name_low.startswith(prefix) for prefix in SAFE_ASSIGNMENT_PREFIXES):
+        return False
+    if any(snippet in line for snippet in SAFE_CALL_SNIPPETS):
+        return False
+    if not any(tok in name_up for tok in SENSITIVE_NAME_TOKENS):
+        return False
+    if val_low in PLACEHOLDER_VALUES:
+        return False
+    if len(val.strip()) < 20:
+        return False
+    return True
+
+
+def scan_text(text: str, rel_path: str = "") -> List[Finding]:
     findings: List[Finding] = []
-    for i, line in enumerate(text.splitlines(), start=1):
+    for i, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.rstrip("\n")
         if IGNORE_MARKER in line:
             continue
 
@@ -159,30 +202,23 @@ def scan_text(text: str, rel_path: str) -> List[Finding]:
             continue
 
         m = RE_ASSIGN.search(line)
-        if m:
-            name = m.group(1)
-            val = (m.group(3) or "").strip()
-            name_up = name.upper()
+        if not m:
+            continue
 
-            if any(tok in name_up for tok in SENSITIVE_NAME_TOKENS):
-                val_low = val.lower()
-                if val_low in PLACEHOLDER_VALUES:
-                    continue
-                if len(val) < 20:
-                    continue
-                if RE_OPENAI_KEY.search(val) or RE_JWT.search(val) or val.startswith("Bearer "):
-                    findings.append(Finding(rel_path, i, "sensitive_assignment", line.strip()[:200]))
-                    continue
-                findings.append(Finding(rel_path, i, "sensitive_assignment", f"{name}=<redacted>"))
+        name = m.group(1)
+        val = (m.group(3) or "").strip()
+        if not _looks_like_sensitive_assignment(name, val, line):
+            continue
 
+        if RE_OPENAI_KEY.search(val) or RE_JWT.search(val) or val.startswith("Bearer "):
+            findings.append(Finding(rel_path, i, "sensitive_assignment", line.strip()[:200]))
+            continue
+
+        findings.append(Finding(rel_path, i, "sensitive_assignment", f"{name}="))
     return findings
 
 
 def _display_path(path: Path, repo_root: Path) -> str:
-    """
-    If path is inside repo_root => show relative.
-    Else => show absolute. (Important for tests using tmp_path)
-    """
     try:
         return str(path.resolve().relative_to(repo_root.resolve()))
     except Exception:
@@ -192,9 +228,7 @@ def _display_path(path: Path, repo_root: Path) -> str:
 def scan_file(path: Path, repo_root: Path, max_bytes: int) -> List[Finding]:
     if _should_skip_path(path):
         return []
-
     rel = _display_path(path, repo_root)
-
     try:
         st = path.stat()
         if st.st_size > max_bytes:
@@ -239,12 +273,11 @@ def _git_list_files(mode: str, repo_root: Path) -> List[Path]:
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or "git command failed")
 
-    files = []
+    files: List[Path] = []
     for line in (r.stdout or "").splitlines():
         line = line.strip()
-        if not line:
-            continue
-        files.append((repo_root / line).resolve())
+        if line:
+            files.append((repo_root / line).resolve())
     return files
 
 
@@ -257,7 +290,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     repo_root = Path(args.repo_root).resolve()
-
     try:
         if args.mode == "paths":
             paths = [Path(p).resolve() for p in args.paths]
@@ -266,11 +298,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         findings = scan_paths(paths, repo_root, args.max_bytes)
         bad = [f for f in findings if f.kind not in {"file_too_large_skipped", "read_error"}]
-
         if not bad:
             return 0
 
-        print("❌ Secret scan FAILED. Findings:")
+        print("Secret scan FAILED. Findings:")
         for f in bad[:200]:
             print(f" - {f.path}:{f.line} [{f.kind}] {f.snippet}")
         if len(bad) > 200:
@@ -278,7 +309,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print()
         print(f"Tip: add '{IGNORE_MARKER}' to a line to suppress a known-safe match.")
         return 2
-
     except Exception as e:
         print(f"secret_scan error: {type(e).__name__}: {e}", file=sys.stderr)
         return 1

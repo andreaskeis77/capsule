@@ -1,0 +1,3 @@
+# Additional developer tooling for Tranche A quality gates.
+# Runtime dependencies remain in requirements.txt.
+ruff==0.15.7

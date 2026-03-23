@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capsule-wardrobe-rag"
+version = "0.1.0"
+description = "Wardrobe Studio service and supporting tooling."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Andreas Keis" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.0.2",
+  "ruff==0.15.7",
+]
+
+[project.urls]
+Repository = "https://github.com/andreaskeis77/capsule"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "tools*"]
+exclude = ["tests*", "docs*", "04_user_data*"]
+
+[tool.setuptools.package-data]
+"*" = ["templates/**/*", "ontology/**/*"]

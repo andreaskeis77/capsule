@@ -2,28 +2,23 @@
 # FILE: tools/handoff_make_run.py
 from __future__ import annotations
 
-# ---- bootstrap: ensure repo root is importable (so `import src` works from anywhere) ----
-import sys
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_repo_root_str = str(_REPO_ROOT)
-if _repo_root_str not in sys.path:
-    sys.path.insert(0, _repo_root_str)
-# ---------------------------------------------------------------------------------------
-
 import argparse
 import subprocess
+import sys
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+try:
+    from tools.ops_common import truncate_text
+    from tools.ops_paths import bootstrap_repo_root
+except Exception:  # pragma: no cover - direct script execution fallback
+    from ops_common import truncate_text  # type: ignore
+    from ops_paths import bootstrap_repo_root  # type: ignore
+
+bootstrap_repo_root(__file__)
 
 from src import settings
 from src.run_registry import start_run
-
-
-def _truncate(s: str, n: int = 4000) -> str:
-    if not s:
-        return ""
-    return s if len(s) <= n else (s[: n - 3] + "...")
 
 
 def _default_script_path() -> Path:
@@ -45,15 +40,12 @@ def parse_args(argv: List[str] | None = None) -> Tuple[argparse.Namespace, List[
         help="Forward to handoff_make.py if supported (optional).",
     )
 
-    # Pass through any unknown args to the underlying script
     args, extra = ap.parse_known_args(argv)
     return args, extra
 
 
 def main(argv: List[str] | None = None) -> int:
     args, passthrough = parse_args(argv)
-
-    # Ensure settings reflect current env (tests override env vars)
     settings.reload_settings()
 
     meta: Dict[str, Any] = {
@@ -81,9 +73,7 @@ def main(argv: List[str] | None = None) -> int:
             h.fail(summary=f"MissingScript: {script_path}")
             return 2
 
-        forward: List[str] = []
-        forward += ["--base", args.base]
-        forward += ["--user", args.user]
+        forward: List[str] = ["--base", args.base, "--user", args.user]
         if args.ids:
             forward += ["--ids", args.ids]
         if args.include_ontology_text:
@@ -98,7 +88,6 @@ def main(argv: List[str] | None = None) -> int:
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
 
-        # keep console output visible
         if stdout:
             sys.stdout.write(stdout)
         if stderr:
@@ -108,8 +97,8 @@ def main(argv: List[str] | None = None) -> int:
             "handoff.exec.done",
             data={
                 "returncode": proc.returncode,
-                "stdout_tail": _truncate(stdout, 2000),
-                "stderr_tail": _truncate(stderr, 2000),
+                "stdout_tail": truncate_text(stdout, 2000),
+                "stderr_tail": truncate_text(stderr, 2000),
             },
         )
 
@@ -120,10 +109,10 @@ def main(argv: List[str] | None = None) -> int:
         h.ok(summary="handoff_make ok")
         return 0
 
-    except Exception as e:
-        h.event("handoff.wrapper.exception", level="ERROR", message=str(e))
-        h.fail(summary=f"{type(e).__name__}: {e}")
-        print(f"[handoff_make_run] ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+    except Exception as exc:
+        h.event("handoff.wrapper.exception", level="ERROR", message=str(exc))
+        h.fail(summary=f"{type(exc).__name__}: {exc}")
+        print(f"[handoff_make_run] ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
 

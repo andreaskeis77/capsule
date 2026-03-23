@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+PY="$ROOT/.venv/Scripts/python.exe"
+if [ ! -x "$PY" ]; then
+  PY="${PYTHON:-python}"
+fi
+
+echo "[pre-commit] secret scan (staged)"
+"$PY" tools/secret_scan.py --mode staged
+
+mapfile -t PY_FILES < <(git diff --cached --name-only --diff-filter=ACMRT | grep -E '\.py$' || true)
+if [ "${#PY_FILES[@]}" -gt 0 ]; then
+  echo "[pre-commit] ruff critical on staged python files"
+  "$PY" -m ruff check --select E9,F63,F7,F82 "${PY_FILES[@]}"
+else
+  echo "[pre-commit] no staged Python files"
+fi
