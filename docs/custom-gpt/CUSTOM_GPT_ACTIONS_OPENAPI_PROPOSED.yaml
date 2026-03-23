@@ -1,0 +1,327 @@
+openapi: 3.1.0
+info:
+  title: Wardrobe Studio API v2
+  version: "2.3.1-proposed"
+  description: >
+    Proposed hardened OpenAPI schema for the Capsule Wardrobe Architect Custom GPT.
+    This version clarifies enums, path parameters and review comments for health/auth semantics.
+
+servers:
+  - url: https://wardrobe.ngrok-app.com.ngrok.app
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
+
+    UserId:
+      type: string
+      enum: [andreas, karen]
+      description: Allowed wardrobe user ids.
+
+    ItemSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+          nullable: true
+        color_primary:
+          type: string
+          nullable: true
+        color_variant:
+          type: string
+          nullable: true
+        needs_review:
+          type: integer
+          minimum: 0
+          maximum: 1
+      required: [id, name, category]
+
+    ListItemsResponse:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/UserId"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ItemSummary"
+      required: [user, items]
+
+    ItemDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+        user_id:
+          $ref: "#/components/schemas/UserId"
+        name:
+          type: string
+        brand:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        color_primary:
+          type: string
+          nullable: true
+        color_variant:
+          type: string
+          nullable: true
+        needs_review:
+          type: integer
+          minimum: 0
+          maximum: 1
+        material_main:
+          type: string
+          nullable: true
+        fit:
+          type: string
+          nullable: true
+        collar:
+          type: string
+          nullable: true
+        price:
+          type: string
+          nullable: true
+        vision_description:
+          type: string
+          nullable: true
+        image_path:
+          type: string
+          nullable: true
+        main_image_url:
+          type: string
+          nullable: true
+        image_urls:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          nullable: true
+      required: [id, user_id, name]
+
+    CreateItemRequest:
+      type: object
+      properties:
+        user_id:
+          $ref: "#/components/schemas/UserId"
+        name:
+          type: string
+        brand:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        color_primary:
+          type: string
+          nullable: true
+        color_variant:
+          type: string
+          nullable: true
+        material_main:
+          type: string
+          nullable: true
+        fit:
+          type: string
+          nullable: true
+        collar:
+          type: string
+          nullable: true
+        price:
+          type: string
+          nullable: true
+        vision_description:
+          type: string
+          nullable: true
+        image_main_base64:
+          type: string
+          description: Base64 image string, data URL also acceptable if backend supports it.
+        image_ext:
+          type: string
+          nullable: true
+          enum: [jpg, jpeg, png, webp]
+      required: [user_id, name, image_main_base64]
+
+    UpdateItemRequest:
+      type: object
+      properties:
+        user_id:
+          allOf:
+            - $ref: "#/components/schemas/UserId"
+          nullable: true
+        name:
+          type: string
+          nullable: true
+        brand:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        color_primary:
+          type: string
+          nullable: true
+        color_variant:
+          type: string
+          nullable: true
+        needs_review:
+          type: integer
+          nullable: true
+          minimum: 0
+          maximum: 1
+        material_main:
+          type: string
+          nullable: true
+        fit:
+          type: string
+          nullable: true
+        collar:
+          type: string
+          nullable: true
+        price:
+          type: string
+          nullable: true
+        vision_description:
+          type: string
+          nullable: true
+
+    DeleteResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+        id:
+          type: integer
+        image_path:
+          type: string
+      required: [deleted, id, image_path]
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /api/v2/health:
+    get:
+      operationId: health
+      summary: API health check for GPT diagnostics
+      description: >
+        Review note: confirm whether this endpoint should require ApiKeyAuth.
+        External runtime smoke tests may use /healthz separately.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v2/items:
+    get:
+      operationId: listItems
+      summary: List items for a user
+      parameters:
+        - name: user
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/UserId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListItemsResponse"
+
+    post:
+      operationId: createItem
+      summary: Create item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateItemRequest"
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemDetail"
+
+  /api/v2/items/{item_id}:
+    get:
+      operationId: getItem
+      summary: Get item by id
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemDetail"
+
+    patch:
+      operationId: updateItem
+      summary: Update item with changed fields only
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateItemRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemDetail"
+
+    delete:
+      operationId: deleteItem
+      summary: Delete item
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteResponse"
