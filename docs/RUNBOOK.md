@@ -1,132 +1,128 @@
-# Runbook – Start/Stop/Debug
+# RUNBOOK – Capsule / Wardrobe Studio
 
-## Quick Start (empfohlen)
+## 1. Zweck
 
-0) Konfiguration anlegen (einmalig)
-- Kopiere `.env.example` → `.env`
-- Setze mindestens `WARDROBE_API_KEY`
-- `.env` bleibt absichtlich unversioniert
+Dieses Runbook beschreibt den praktischen Arbeits- und Betriebsmodus für Capsule:
 
-1) venv aktivieren
-- PowerShell: `\.venv\Scripts\Activate.ps1`
+- lokale Entwicklung
+- Quality Gates
+- Release-/Push-Rhythmus
+- Handoff
+- VPS-Deployment-Vorbereitung
+- Störungsdiagnose
 
-2) Start via Batch
-- `\.\Wardrobe_Studio_Starten.bat`
+## 2. Lokale Standardbefehle
 
-URLs:
-- Local Dashboard: `http://127.0.0.1:5002/?user=karen`
-- Local Docs: `http://127.0.0.1:5002/docs`
-- Health: `http://127.0.0.1:5002/healthz`
-- API v2 health: `http://127.0.0.1:5002/api/v2/health`
+### 2.1 Umgebung aktivieren
 
-ngrok (fixed domain):
-- `https://wardrobe.ngrok-app.com.ngrok.app/?user=karen`
-- `https://wardrobe.ngrok-app.com.ngrok.app/docs`
+```powershell
+cd C:\CapsuleWardrobeRAG
+.\.venv\Scripts\Activate.ps1
+```
 
-## Start ohne ngrok (PowerShell)
+### 2.2 Quality Gates
 
-- `$env:START_NGROK="0"`
-- `\.\Wardrobe_Studio_Starten.bat`
+```powershell
+python .\tools\run_quality_gates.py
+```
 
-Zurücksetzen:
-- `Remove-Item Env:START_NGROK -ErrorAction SilentlyContinue`
+Dieser Befehl ist der lokale Standard-Gate-Lauf.
 
-## Manuell starten (Debug Mode)
+### 2.3 Lokaler App-Start
 
-- `python .\src\server_entry.py`
-- Stop: `CTRL+C`
+```powershell
+python -m src.server_entry
+```
 
-## Logs
+### 2.4 Wichtige lokale Prüfpfade
 
-Ordner: `logs/`
+- Weboberfläche: `http://127.0.0.1:5002/?user=karen`
+- API Health: `http://127.0.0.1:5002/api/v2/health`
 
-Wichtige Dateien:
-- `startup.log`
-- `server.out.log`
-- `server.err.log`
-- `ngrok.out.log`
-- `ngrok.err.log`
+## 3. Standard-Entwicklungsablauf
 
-Rotation:
-- Batch rotiert in `*_YYYYMMDD-HHMMSS.log`
+1. Branch / Arbeitsstand klären
+2. Änderung implementieren
+3. Tests / Gates laufen lassen
+4. Doku aktualisieren, wenn:
+   - Architektur geändert wurde
+   - Runtime-/Deploy-Konzept geändert wurde
+   - Handoff-relevante Zustände geändert wurden
+   - neue Tranche / neuer Meilenstein abgeschlossen wurde
+5. Commit
+6. Push
 
-## Häufige Probleme
+## 4. Handoff-Regel
 
-### Batch hängt bei „Warte auf Readiness.“
+Bei Meilensteinen oder Übergaben müssen mindestens aktualisiert werden:
+
+- `docs/PROJECT_STATE.md`
+- Handoff-Artefakte / Handoff-Zusammenfassung
+- relevante ADR(s), falls Entscheidungen verändert wurden
+
+## 5. Release-/Push-Regel
+
+Vor Push auf `main` mindestens:
+
+```powershell
+python .\tools\run_quality_gates.py
+git status --short
+git commit -m "<saubere Nachricht>"
+git push origin main
+```
+
+## 6. Lokale Diagnose
+
+### 6.1 Wenn Gates fehlschlagen
+
+Die Artefakte liegen unter:
+
+```text
+docs\_ops\quality_gates\run_<timestamp>\
+```
+
+Relevante Dateien:
+
+- `summary.md`
+- `step_compileall.log`
+- `step_ruff_critical.log`
+- `step_pytest.log`
+- `step_secret_scan_tracked.log`
+- `step_live_smoke.log`
+
+### 6.2 Wenn der Server nicht startet
 
 Prüfen:
-- `http://127.0.0.1:5002/healthz`
-- `logs/server.err.log`
 
-Mögliche Ursachen:
-- Port belegt
-- venv kaputt / Dependencies fehlen
-- Serverprozess nicht gestartet
+- `.env`
+- Ports / Host-Konfiguration
+- `src/server_entry.py`
+- `src/runtime_config.py`
+- `src/runtime_env.py`
+- Pfade zur DB / Datenablage
 
-### Port 5002 belegt
+## 7. Workspace Cleanup
 
-Optionen:
-- Batch mit `FORCE_RESTART=1` starten
-- oder manuell prüfen:
-  - `Get-NetTCPConnection -State Listen -LocalPort 5002`
+Für lokale Inventur / Cleanup stehen bereit:
 
-### venv kaputt / Pakete fehlen
+- `tools/workspace_inventory.py`
+- `tools/workspace_cleanup_apply.py`
+- `tools/workspace_cleanup_apply_safe.py`
 
-Rebuild:
-1. `.venv` umbenennen/entfernen
-2. `python -m venv .venv`
-3. `\.\.venv\Scripts\Activate.ps1`
-4. `pip install -r requirements.txt`
+Wichtig:
+- `docs/_ops/`, `docs/_archive/`, `docs/_notebooklm/` bleiben lokal und sind in `.gitignore`
+- Cleanup-Werkzeuge sind vorsichtig einzusetzen; Standard ist zuerst Inventur / Dry-Run
 
-## Quality Gates (Tranche A)
+## 8. VPS-Betrieb – Zielzustand
 
-Zusätzliche Dev-Tools installieren:
-- `pip install -r requirements-dev.txt`
+Der Zielzustand ist:
 
-Voller lokaler Gate-Lauf inkl. temporärem Serverstart:
-- `\.\tools\run_quality_gates.ps1`
+- App läuft auf Windows-VPS
+- ngrok läuft ebenfalls auf dem VPS
+- Karen braucht lokal keinen Server
+- ChatGPT Custom GPT und Website gehen gegen denselben VPS-Backend-Stand
 
-Gegen bereits laufenden lokalen Server:
-- `\.\tools\run_quality_gates.ps1 -ReuseServer -BaseUrl http://127.0.0.1:5002`
+Siehe dazu zusätzlich:
 
-Nur statische Gates ohne Live-Smoke:
-- `\.\tools\run_quality_gates.ps1 -SkipLiveSmoke`
-
-Python-Direktaufruf:
-- `python .\tools\run_quality_gates.py --start-server --port 5012 --user karen --ids 112,101,110`
-
-Ergebnisartefakte:
-- `docs/_ops/quality_gates/run_<timestamp>/summary.md`
-- `docs/_ops/quality_gates/run_<timestamp>/summary.json`
-- Schritt-Logs `step_*.log`
-- optional `server.out.log` / `server.err.log`
-
-## API Smoke Tests (bestehend)
-
-PowerShell Script:
-- `tools/Test-WardrobeApi.ps1`
-
-Minimal:
-- GET `/healthz` → 200
-- GET `/api/v2/health` → 200
-
-## Git Hook (optional, lokal)
-
-Installieren:
-- `\.\tools\install_git_hooks.ps1`
-
-Wirkung:
-- Secret-Scan auf staged Dateien
-- `ruff`-Critical-Check auf gestagte Python-Dateien
-
-## Git Workflow (Minimum)
-
-Vor Änderung:
-- `git status`
-
-Nach Änderung + bestandenem Gate:
-- `git add .`
-- `git commit -m "..."`
-
-Empfehlung:
-- Vor Push mindestens einmal `\.\tools\run_quality_gates.ps1`
+- `docs/DEPLOYMENT_TARGET_STATE.md`
+- `docs/VPS_DEPLOYMENT_RUNBOOK.md`

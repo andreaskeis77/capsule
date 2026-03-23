@@ -1,40 +1,67 @@
-# HANDOFF MANIFEST – Wardrobe Studio
+# HANDOFF_MANIFEST – Capsule
 
-## Purpose
-This document defines what a “handoff bundle” contains and how to reproduce the system state.
+## 1. Zweck
 
-## Required Inputs
-- Repo root: `C:\CapsuleWardrobeRAG`
-- Python: 3.12 + `.venv`
-- `.env` is required (secrets NOT included in handoff bundles)
+Ein Handoff muss so geschrieben sein, dass ein neuer Chat oder ein anderer Bearbeiter ohne Rekonstruktion aus diffusen Einzelständen weiterarbeiten kann.
 
-## Generated Outputs (docs/_snapshot/)
-Each handoff run produces:
-- `handoff_summary.md` (entry point, status OK/FAILED)
-- `sanity_check.txt` (proof of running server + HTTP checks)
-- `runtime_state.md` (python, pip freeze, env presence only)
-- `project_audit_dump.md` (filtered tree + text sources, secrets redacted)
-- `data_snapshot.md` (DB + images + ontology file hashes)
-- `ontology_runtime_dump.json` (resolved ontology inputs: overrides + color lexicon + parts index)
-- `ontology_runtime_summary.md` (human-readable ontology summary)
+## 2. Pflichtinhalt jedes Handoffs
 
-## Security
-- Secrets must not appear in snapshots.
-- `.env` is treated as sensitive and is omitted by default by audit tools.
-- The runtime state file reports only presence of env vars (SET/NOT_SET), never values.
+Jedes Handoff enthält mindestens:
 
-## How to Run
-1) Start server (in one terminal):
-- `python -m src.server_entry` or `Wardrobe_Studio_Starten.bat`
+1. **Ziel / Kontext**
+   - woran wird gearbeitet?
+   - warum ist das relevant?
 
-2) Run handoff master (in another terminal):
-- `python tools/handoff_make.py --base http://127.0.0.1:5002 --user karen --ids 112,101,110`
+2. **Ist-Stand**
+   - Commit / Branch
+   - relevanter technischer Stand
+   - relevante Betriebsannahmen
 
-Optional:
-- include ontology markdown text into the ontology runtime JSON:
-  - `python tools/handoff_make.py --include-ontology-text`
+3. **Letzter validierter Zustand**
+   - letzter erfolgreicher Gate-Lauf
+   - relevante Artefaktpfade
+   - besondere Warnungen / bekannte Grenzen
 
-## Definition of Done
-- `handoff_summary.md` shows status `OK`
-- sanity checks passed
-- artifacts are written to `docs/_snapshot/latest/`
+4. **Änderungsumfang**
+   - betroffene Dateien / Module
+   - Doku-Änderungen
+   - Deploy-Impact
+
+5. **Offene Punkte**
+   - Fehler
+   - Entscheidungen
+   - Risiken
+   - nächste Blocker
+
+6. **Nächster konkreter Schritt**
+   - genau ein robuster Startpunkt
+   - kein allgemeines „weitermachen“, sondern ein umsetzbarer Folgebefehl oder Arbeitsschritt
+
+## 3. Qualitätsregeln
+
+- Keine unpräzisen Zustandsbehauptungen
+- Keine unbelegten „sollte gehen“-Formulierungen
+- Keine Handoffs nur als Chat-Roman
+- Immer mit einem technisch belastbaren Einstiegspunkt enden
+
+## 4. Artefaktquellen
+
+Falls vorhanden, sollen Handoffs auf folgende Artefaktgruppen verweisen:
+
+- `docs/PROJECT_STATE.md`
+- `docs/RUNBOOK.md`
+- letzte Quality-Gate-Artefakte
+- Release-Evidence / Readiness-Reports
+- relevante ADRs
+
+## 5. Projektbezogene Zusatzregel
+
+Für Capsule muss im Handoff klar stehen:
+
+- ob Karen lokal hosten muss oder nicht
+- welcher Zugriffspfad aktuell maßgeblich ist:
+  - lokales Dashboard
+  - VPS-URL
+  - ChatGPT Custom GPT
+  - Website
+- ob der aktuelle Stand bereits auf dem VPS deployed wurde oder nur lokal / im Repo vorliegt

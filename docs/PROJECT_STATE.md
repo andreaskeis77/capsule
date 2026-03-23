@@ -1,82 +1,186 @@
-# PROJECT_STATE – Wardrobe Studio (RAG Wardrobe Projekt)
+# PROJECT_STATE – Capsule / Wardrobe Studio
 
-Stand: 2026-03-22 (Europe/Berlin)
+Stand: 2026-03-23 (Europe/Berlin)
 
-## Ziel
+## 1. Zielbild
 
-Ein lokales Wardrobe-Management-System (Backend + Web-UI) für „Karen“ und später weitere Nutzer,
-das reale Bestandsdaten, Bilder, Ontologie-gestützte Attribute und eine bedienbare Weboberfläche in
-einem nachvollziehbaren Engineering-Rahmen zusammenführt.
+Capsule ist das zentrale Wardrobe-Management-System für Karen und perspektivisch weitere Nutzer. Das System verbindet:
 
-## Aktueller Status (faktisch)
+- strukturierte Bestandsdaten
+- Bilder und Dateiartefakte
+- Ontologie-gestützte Klassifikation und Normalisierung
+- Weboberfläche für Bedienung und Review
+- API-Endpunkte für Integration in ChatGPT Custom GPT und weitere Clients
+- klaren Engineering-, Testing-, Handoff- und Release-Rahmen
 
-- Repo Root: `C:\CapsuleWardrobeRAG`
-- Python: 3.12, virtuelle Umgebung: `.venv`
-- Serverstart: `python -m src.server_entry`
-- Lokaler Standard-Port: `5002`
-- Dashboard: `http://127.0.0.1:5002/?user=karen`
-- API-Health: `http://127.0.0.1:5002/api/v2/health`
-- ngrok Fixed Domain: `https://wardrobe.ngrok-app.com.ngrok.app`
-- Snapshot-/Handoff-Tooling vorhanden
-- Test-Suite vorhanden
-- Secret-Scan vorhanden
-- Repo-Metrics / Hotspot-Analyse vorhanden
+Das Ziel ist kein rein lokales Bastelsystem mehr, sondern ein kontrollierbar betriebenes, dokumentiertes und übergebbares System.
 
-## Wesentliche Komponenten
+## 2. Aktueller Produkt- und Technikstand
 
-- `src/api_main.py` – FastAPI App, Request-Middleware, Fehlervertrag, Mount API v2 + Flask-Dashboard
-- `src/api_v2.py` – API-v2-Endpunkte und zentraler Applikations-Hotspot
-- `src/web_dashboard.py` – Flask-Weboberfläche
-- `src/ingest_item_runner.py` – Ingest-Orchestrierung
-- `src/run_registry.py` – Run-bezogene Metadaten / KPIs
-- `src/ontology_runtime*.py` – Runtime-Layer für Ontologie, Matching, Index, Loader
-- `tools/secret_scan.py` – Secret-Hygiene
-- `tools/project_sanity_check.py` – Live-Sanity gegen laufenden Server
-- `tools/handoff_make.py` – Handoff-/Snapshot-Erzeugung
+### 2.1 Produktzugänge
 
-## Meilenstein 2026-03-22 – Tranche A (Quality Gates)
+Aktuell sind zwei primäre Nutzungswege vorgesehen:
 
-Tranche A führt einen ersten harten Gate-Rahmen ein, ohne den Runtime-Contract der Anwendung umzubauen.
+1. **ChatGPT / Custom GPT**
+   - ChatGPT nutzt definierte Actions gegen die Capsule-API.
+   - Karen soll Capsule darüber direkt bedienen können, ohne lokalen Server auf ihrem Laptop.
 
-Neu eingeführt:
-- GitHub Actions Workflow für automatische Gates
-- `requirements-dev.txt` für zusätzliche Dev-Tooling-Abhängigkeiten
-- `tools/run_quality_gates.py` als gemeinsamer Gate-Runner
-- `tools/run_quality_gates.ps1` als Windows-Einstiegspunkt
-- optionaler Git-Hook für lokalen Commit-Schutz
-- ADR für die Tranche-A-Entscheidung
+2. **Weboberfläche**
+   - Browserbasierter Zugriff auf die Capsule-Webseite / das Dashboard.
+   - Die Website kann je nach Use Case serverseitig mit der OpenAI API kommunizieren.
 
-Ziel von Tranche A:
-- deterministischer Einstiegspunkt für Qualitätsprüfungen
-- reproduzierbare Artefakte pro Gate-Lauf
-- frühe, konkrete Fehlerzuordnung auf Schritt-Ebene
-- Security Hygiene als Standardpfad
+### 2.2 Ziel für Karen
 
-## Standard-Gates nach Tranche A
+**Karen soll keinen lokalen Capsule-Server mehr auf ihrem Laptop betreiben müssen.**
 
-Stufe 1:
-- `compileall`
-- `ruff` (kritische Regeln: `E9,F63,F7,F82`)
-- `pytest -q`
-- `tools/secret_scan.py --mode tracked`
+Zielzustand:
 
-Stufe 1+ Runtime:
-- lokaler Serverstart in isoliertem Port
-- `tools/project_sanity_check.py` gegen `/healthz`, `/api/v2/health` und Selection-URL
+- Betrieb auf zentralem Windows-VPS
+- öffentlicher Zugriff über einen stabilen Tunnel / öffentlichen Endpoint
+- Karen nutzt nur noch:
+  - ChatGPT Custom GPT, oder
+  - Browser / Website
 
-Artefaktpfad:
-- `docs/_ops/quality_gates/run_<timestamp>/`
+## 3. Engineering- und Hardening-Stand
 
-## Nächste große Tranche
+Zwischen 2026-03-22 und 2026-03-23 wurde das Repo in großen Hardening-Tranchen A–R überarbeitet. Alle Tranches wurden lokal mit denselben Quality Gates validiert.
 
-**Tranche B – API-v2-Hotspot-Zerlegung**
-- `src/api_v2.py` in klarere Router-/Service-Schnitte trennen
-- Contract-Stabilität bewahren
-- Regressionen über bestehende Tests plus gezielte neue Tests absichern
+### 3.1 Validierte Tranchengruppen
 
-## Operative Regeln
+- **A** Quality Gates
+- **B** API-v2 modularisiert
+- **C** Ingest / Run Registry gehärtet
+- **D** Dashboard / Category Map modularisiert
+- **E** Ontology Runtime / Index entkoppelt
+- **F** Runtime-Config / Entrypoints gehärtet
+- **G** Tooling / Ops konsolidiert
+- **H** Persistenz / DB / Schema-Migrationspfad gehärtet
+- **I** GitHub-CI / Required Checks vorbereitet
+- **J** Release-Governance / Branch-Protection / Release-Evidence
+- **K** standardisierte lokale Task-/Developer-Entrypoints
+- **L** Doku / Navigation gehärtet
+- **M** Observability / Diagnose / Reporting gehärtet
+- **N** Testarchitektur / Suite-Layering gehärtet
+- **O** Performance-Baselines / Hot-Path-Messung
+- **P** Security / Supply-Chain-Hygiene
+- **Q** Packaging / Distribution / Release-Artefakte
+- **R** Final Baseline / Normal Operations / Readiness
 
-- keine Vermutungsfixes
-- vollständige Dateien statt Diff-Schnipsel
-- erst messen, dann ändern
-- jede größere Änderung mit nachweisbarem Gate abschließen
+### 3.2 Validierungsstandard
+
+Der aktuelle Entwicklungsstandard basiert auf:
+
+- `python .\tools\run_quality_gates.py`
+- Compile-/Lint-/Pytest-/Secret-Scan-/Live-Smoke-Gates
+- dokumentierten ADRs
+- dokumentierten Release-/Readiness-Artefakten
+- lokalem und GitHub-seitigem Governance-Rahmen
+
+## 4. Wichtige technische Komponenten
+
+### 4.1 Laufzeit / Schnittstellen
+
+- `src/api_main.py` – App Composition / Middleware / Mounting
+- `src/api_v2.py` + Split-Module – API-v2-Fassade und spezialisierte Module
+- `src/web_dashboard.py` + Split-Module – Weboberfläche
+- `src/server_entry.py` – lokaler / serverseitiger Startpunkt
+- `src/runtime_config.py`, `src/runtime_env.py`, `src/settings.py` – Konfigurationspfad
+
+### 4.2 Fach- und Ingest-Kern
+
+- `src/ingest_item_runner.py`
+- `src/ingest_run_outcome.py`
+- `src/run_registry.py`
+- `src/run_registry_redaction.py`
+- `src/run_registry_metrics.py`
+
+### 4.3 Ontology Runtime
+
+- `src/ontology_runtime.py`
+- `src/ontology_runtime_manager.py`
+- `src/ontology_runtime_index.py`
+- `src/ontology_runtime_index_builders.py`
+- `src/ontology_runtime_index_customization.py`
+- `src/ontology_runtime_normalize.py`
+
+### 4.4 Persistenz
+
+- `src/db_schema.py`
+- `src/db_schema_migrations.py`
+- `src/db_sqlite.py`
+- `src/database_manager.py`
+- `src/update_db_schema.py`
+- `src/check_db.py`
+- `src/db_inspect.py`
+
+### 4.5 Ops / Governance / Diagnostics
+
+- `tools/run_quality_gates.py`
+- `tools/secret_scan.py`
+- `tools/handoff_make.py`
+- `tools/release_evidence.py`
+- `tools/final_repo_baseline.py`
+- `tools/final_readiness_report.py`
+- `tools/task_runner.py`
+
+## 5. Aktueller Betriebsmodus
+
+### 5.1 Lokal
+
+Standard für lokale Entwicklung:
+
+1. `.venv` aktivieren
+2. Änderungen durchführen
+3. `python .\tools\run_quality_gates.py`
+4. bei Erfolg committen / pushen
+5. relevante Doku aktualisieren
+
+### 5.2 Ziel-Betrieb
+
+Ziel ist ein zentraler Betrieb auf Windows-VPS mit:
+
+- Capsule-App auf dem VPS
+- öffentlichem Zugriff über ngrok oder später Reverse Proxy / festen Host
+- Karen ohne lokalen App-Host
+- OpenAI API Keys nur serverseitig
+
+## 6. Wichtige Entscheidungen
+
+### 6.1 Karen soll nicht mehr lokal hosten
+
+Das ist eine zentrale Zielentscheidung. Karen soll die Lösung konsumieren, nicht hosten.
+
+### 6.2 Ein kanonisches Backend
+
+Custom GPT und Website sollen **dasselbe Backend** nutzen. Keine zweite, voneinander abweichende Logik.
+
+### 6.3 OpenAI-Kommunikation serverseitig
+
+Wenn die Webanwendung OpenAI nutzt, dann über serverseitige Logik. API-Keys gehören nicht in Browser-Clients.
+
+## 7. Offene nächste Aufgaben
+
+### Priorität 1 – Projektdoku und Handoff aktualisieren
+
+- Projekt-Doku auf aktuellen A–R-Stand bringen
+- Handoff-Standards für Chat-Sessions konsolidieren
+- Engineering Manifest projektbezogen ergänzen
+
+### Priorität 2 – VPS-Deployment
+
+- aktuellen Stand auf den Windows-VPS bringen
+- `.env` / Secrets / Datenpfade sauber definieren
+- App-Start und ngrok-Start auf dem VPS stabilisieren
+- Live-Smoke gegen öffentliche URL
+
+### Priorität 3 – Betriebsmodell finalisieren
+
+- entscheidet Karen primär über Custom GPT, Website oder beides?
+- welche Flows gehen direkt auf Capsule-API?
+- welche Flows gehen serverseitig zusätzlich über OpenAI API?
+
+## 8. Bewusste Restschulden
+
+- GitHub-seitige Branch Protection / Required Checks müssen real auf GitHub aktiviert werden
+- reales VPS-Deployment ist noch nicht als produktionsnaher Zielzustand verifiziert
+- finaler Betriebsmodus Custom GPT vs. Website vs. hybrid ist architektonisch definiert, aber noch nicht vollständig live umgesetzt
