@@ -1,42 +1,52 @@
+# FILE: tests/test_docs_navigation.py
+from __future__ import annotations
+
 from pathlib import Path
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-REQUIRED_DOCS = [
-    REPO_ROOT / "README.md",
-    REPO_ROOT / "docs" / "INDEX.md",
-    REPO_ROOT / "docs" / "QUICKSTART.md",
-    REPO_ROOT / "docs" / "ARCHITECTURE.md",
-    REPO_ROOT / "docs" / "HANDOFF_GUIDE.md",
-    REPO_ROOT / "docs" / "adr" / "ADR-INDEX.md",
-    REPO_ROOT / "docs" / "adr" / "ADR-0012-documentation-and-navigation-hardening.md",
-]
 
-
-def test_required_navigation_docs_exist():
-    missing = [str(p.relative_to(REPO_ROOT)) for p in REQUIRED_DOCS if not p.exists()]
-    assert not missing, f"missing docs: {missing}"
-
-
-def test_readme_links_to_core_docs():
+def test_readme_links_to_current_core_docs():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
     for rel in [
-        "docs/QUICKSTART.md",
-        "docs/ARCHITECTURE.md",
-        "docs/DEVELOPER_WORKFLOW.md",
+        "docs/ARCHITECTURE_REQUIREMENTS_DOSSIER.md",
+        "docs/ENGINEERING_MANIFEST.md",
+        "docs/RELEASE_MANAGEMENT.md",
+        "docs/RELEASE_NOTES.md",
         "docs/RUNBOOK.md",
-        "docs/HANDOFF_GUIDE.md",
     ]:
-        assert rel in text
+        assert rel in text, f"README should reference {rel}"
 
 
-def test_docs_index_links_to_core_navigation_targets():
-    text = (REPO_ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
+def test_readme_mentions_supporting_doc_areas():
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
     for rel in [
-        "QUICKSTART.md",
-        "ARCHITECTURE.md",
-        "RUNBOOK.md",
-        "HANDOFF_GUIDE.md",
-        "adr/ADR-INDEX.md",
+        "docs/adr/",
+        "docs/history/",
+        "docs/gpt/",
     ]:
-        assert rel in text
+        assert rel in text, f"README should reference {rel}"
+
+
+def test_core_docs_exist():
+    for rel in [
+        "docs/ARCHITECTURE_REQUIREMENTS_DOSSIER.md",
+        "docs/ENGINEERING_MANIFEST.md",
+        "docs/RELEASE_MANAGEMENT.md",
+        "docs/RELEASE_NOTES.md",
+    ]:
+        assert (REPO_ROOT / rel).exists(), f"Missing core doc: {rel}"
+
+
+def test_initial_adrs_exist():
+    for rel in [
+        "docs/adr/ADR-0001-system-context-and-runtime-topology.md",
+        "docs/adr/ADR-0002-fastapi-flask-cohost.md",
+        "docs/adr/ADR-0003-sqlite-and-filesystem-split.md",
+        "docs/adr/ADR-0004-ontology-runtime-and-soft-validation.md",
+        "docs/adr/ADR-0005-public-exposure-domain-cloudflare-ngrok.md",
+    ]:
+        assert (REPO_ROOT / rel).exists(), f"Missing ADR: {rel}"
