@@ -1,0 +1,7 @@
+﻿version: "2"
+authtoken: __NGROK_AUTHTOKEN__
+tunnels:
+  app:
+    proto: http
+    addr: 127.0.0.1:8000
+ __DOMAIN_LINE__
