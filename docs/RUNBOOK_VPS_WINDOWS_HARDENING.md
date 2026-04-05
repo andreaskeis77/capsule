@@ -735,3 +735,4 @@ Der nächste kleine, kontrollierte Folgeschritt sollte auf dem DEV-LAPTOP vorber
 3. Klärung, warum `ngrok.yml` mit `__DOMAIN_LINE__` in einen ungültigen Zustand geraten konnte
 4. Dokumentations-Update für den finalen Betriebszustand
 5. Optionale Entscheidungsvorlage: API dauerhaft als Task belassen oder später mit anderem Service-Ansatz erneut migrieren
+

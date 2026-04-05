@@ -17,3 +17,5 @@
 - API bleibt vorerst bewusst beim Scheduled Task
 - ngrok-Token wurde nicht rotiert
 - `ngrok.yml` musste manuell korrigiert werden; Template-/Bootstrap-Logik noch prüfen
+
+
