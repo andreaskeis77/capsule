@@ -609,3 +609,129 @@ Der Recovery-/Hardening-Abschnitt ist erst dann wirklich abgeschlossen, wenn all
 - Reboot-Test ist erfolgreich
 
 Erst danach sollte die nächste Infrastrukturstufe diskutiert werden.
+
+## 17. Final validierter Ist-Zustand nach Recovery
+
+Stand nach erfolgreichem Reboot-Test auf dem VPS:
+
+### 17.1 Aktives Betriebsmodell
+
+- **Capsule-API** läuft aktuell weiterhin als **Windows Scheduled Task**
+  - Taskname: `Capsule-API`
+  - aktueller Zustand: funktionsfähig
+  - lokaler Health-Check: `http://127.0.0.1:8000/healthz` → `ok`
+
+- **ngrok** läuft aktuell als **echter Windows-Service**
+  - Service-Name: `ngrok`
+  - Service-Account: `.\svc-capsule`
+  - öffentlicher Health-Check: `https://wardrobe.ngrok-app.com.ngrok.app/healthz` → `ok`
+
+- Der frühere Scheduled Task **`Capsule-ngrok`** wurde deaktiviert und ist nicht mehr der aktive Betriebsweg.
+
+### 17.2 Reboot-validierter Endzustand
+
+Nach erfolgreichem Neustart des VPS wurde bestätigt:
+
+- `ngrok`-Service startet korrekt
+- `Capsule-API`-Task startet korrekt
+- lokaler `/healthz` ist erreichbar
+- öffentlicher `/healthz` ist erreichbar
+- `vps_smoke_test.ps1` läuft erfolgreich durch
+
+### 17.3 Wichtige Betriebsbewertung
+
+Damit ist der Recovery-Abschnitt operativ erfolgreich abgeschlossen.
+
+Der derzeitige stabile Zielzustand ist ausdrücklich:
+
+- **Capsule-API als Scheduled Task belassen**
+- **ngrok als Windows-Service belassen**
+
+---
+
+## 18. Ergebnis der API-Service-Migration
+
+### 18.1 Versuch
+
+Es wurde versucht, die Capsule-API ebenfalls von Scheduled Task auf einen echten Windows-Service umzustellen, mit **WinSW** als Service-Wrapper und dem Service-Account `.\svc-capsule`.
+
+### 18.2 Ergebnis
+
+Dieser Versuch war **nicht erfolgreich**.
+
+Beim Test nach Umstellung zeigte sich:
+
+- `CapsuleApi`-Service blieb gestoppt
+- lokaler API-Endpunkt `http://127.0.0.1:8000/healthz` war nicht erreichbar
+- öffentlicher Endpunkt lieferte dadurch `502 Bad Gateway`
+- der Smoke-Test schlug fehl
+
+### 18.3 Maßnahme
+
+Die Änderung wurde sauber **zurückgerollt**:
+
+- WinSW-basierter `CapsuleApi`-Service wurde entfernt
+- `Capsule-API` Scheduled Task wurde wieder aktiviert
+- API wurde wieder per Task gestartet
+- lokaler und öffentlicher Health-Check waren danach wieder erfolgreich
+
+### 18.4 Schlussfolgerung
+
+Die API-Service-Migration ist **derzeit nicht Teil des produktiven Zielzustands**.
+
+Bis zu einer sauberen technischen Klärung bleibt die API bewusst bei:
+
+- **Scheduled Task**
+- **nicht als WinSW-Service**
+
+---
+
+## 19. Bekannte offene Punkte
+
+### 19.1 ngrok-Template-/Bootstrap-Logik nicht abschließend bereinigt
+
+Während der Recovery zeigte sich, dass `ngrok.yml` zeitweise ungültig war, weil dort der Platzhalter `__DOMAIN_LINE__` wörtlich verblieben war.
+
+Die Datei musste manuell repariert werden, damit ngrok wieder korrekt starten konnte.
+
+Daraus folgt:
+
+- die Logik rund um `ngrok.template.yml`
+- sowie die Verarbeitung in `vps_bootstrap.ps1` und/oder `vps_run_ngrok.ps1`
+
+ist fachlich noch einmal gezielt zu prüfen.
+
+### 19.2 ngrok-Token nicht rotiert
+
+Der ngrok-Token wurde im Verlauf der Arbeiten sichtbar und später nicht rotiert.
+
+Das blockiert den aktuellen Betrieb nicht, bleibt aber ein offener Security-Follow-up.
+
+### 19.3 Service-Migration der API vertagt
+
+Die Frage, ob die Capsule-API künftig ebenfalls als echter Windows-Service betrieben werden soll, ist weiterhin offen.
+
+Diese Entscheidung wurde bewusst vertagt, weil der aktuelle Produktionszustand stabil ist und der WinSW-Versuch nicht erfolgreich war.
+
+---
+
+## 20. Aktuelle operative Empfehlung
+
+Bis auf Weiteres gilt für den VPS folgender Zielzustand:
+
+- **Capsule-API** über Scheduled Task `Capsule-API`
+- **ngrok** über Windows-Service `ngrok`
+- **Capsule-ngrok** Task deaktiviert lassen
+- keine weitere Live-Umbauarbeit auf dem VPS ohne separaten Change-Schritt
+
+---
+
+## 21. Empfohlener nächster Engineering-Bolt
+
+Der nächste kleine, kontrollierte Folgeschritt sollte auf dem DEV-LAPTOP vorbereitet werden und nur diese Punkte behandeln:
+
+1. Prüfung von `vps_bootstrap.ps1`
+2. Prüfung von `vps_run_ngrok.ps1`
+3. Klärung, warum `ngrok.yml` mit `__DOMAIN_LINE__` in einen ungültigen Zustand geraten konnte
+4. Dokumentations-Update für den finalen Betriebszustand
+5. Optionale Entscheidungsvorlage: API dauerhaft als Task belassen oder später mit anderem Service-Ansatz erneut migrieren
