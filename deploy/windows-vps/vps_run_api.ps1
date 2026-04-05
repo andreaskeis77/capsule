@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SettingsPath = "$PSScriptRoot\vps-settings.ps1"
 )
 
@@ -11,4 +11,28 @@ $stdout = Join-Path $CapsuleLogsDir "capsule-api.out.log"
 $stderr = Join-Path $CapsuleLogsDir "capsule-api.err.log"
 
 Set-Location $CapsuleRepoRoot
-& $CapsulePythonExe -m uvicorn src.server_entry:app --host $CapsuleBindHost --port $CapsuleBindPort --proxy-headers 1>> $stdout 2>> $stderr
+
+$args = @(
+    "-m", "uvicorn",
+    "src.api_main:app",
+    "--host", $CapsuleBindHost,
+    "--port", [string]$CapsuleBindPort,
+    "--proxy-headers"
+)
+
+$proc = Start-Process `
+    -FilePath $CapsulePythonExe `
+    -ArgumentList $args `
+    -WorkingDirectory $CapsuleRepoRoot `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr `
+    -WindowStyle Hidden `
+    -PassThru
+
+Start-Sleep -Seconds 2
+
+if ($proc.HasExited) {
+    exit $proc.ExitCode
+}
+
+exit 0

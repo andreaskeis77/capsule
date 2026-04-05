@@ -1,4 +1,4 @@
-# Copy this file to:
+﻿# Copy this file to:
 #   deploy\windows-vps\vps-settings.ps1
 # and adapt the values for the VPS.
 
@@ -27,7 +27,8 @@ $CapsuleNgrokTaskName = "Capsule-ngrok"
 $CapsuleLogsDir = "C:\CapsuleWardrobeRAG\logs\vps"
 
 # Smoke tests
-$CapsuleLocalHealthUrl = "http://127.0.0.1:8000/health"
+$CapsuleLocalHealthUrl = "http://127.0.0.1:8000/healthz"
 # Optional public URL if you have a reserved ngrok domain:
 # $CapsulePublicBaseUrl = "https://capsule-yourteam.ngrok.app"
 $CapsulePublicBaseUrl = ""
+
